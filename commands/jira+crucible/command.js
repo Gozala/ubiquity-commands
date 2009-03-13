@@ -1,50 +1,50 @@
 var noun_type_jira = {
-    
+
     _name: "jira noun",
-    
+
     get baseJiraURL() {
         return Application.prefs.getValue('ubiquity.commands.jira.jiraUrl',null);
     },
-    
+
     set baseJiraURL(value) {
         return Application.prefs.setValue('ubiquity.commands.jira.jiraUrl',value);
     },
-    
+
     get baseCrucibleURL() {
         return Application.prefs.getValue('ubiquity.commands.jira.crucibleUrl',null);
     },
-    
+
     set baseCrucibleURL(value) {
         return Application.prefs.setValue('ubiquity.commands.jira.crucibleUrl',value);
     },
-    
+
     get searchJiraURL() {
         return noun_type_jira.baseJiraURL+'secure/QuickSearch.jspa?searchString=';
     },
-    
+
     get searchCrucibleURL() {
         return noun_type_jira.baseCrucibleURL + 'cru/search?query=';
     },
-    
+
     get createJiraURL() {
         return noun_type_jira.baseJiraURL+'secure/CreateIssue!default.jspa';
     },
-    
+
     get createCrucibleURL() {
         return noun_type_jira.baseCrucibleURL+'cru/createReview';
     },
-    
+
     get iconJiraURL() {
         return 'https://jira.atlassian.com/favicon.ico';
     },
-    
+
     get iconCrucibleURL() {
         return 'http://fisheye.atlassian.com/favicon.ico';
     },
-    
+
     suggest : function(text, html) {
         var suggestions = [];
-        
+
         if (!noun_type_jira.baseJiraURL) {
             var message = 'Set JIRA url to : '+text;
             suggestions.push({
@@ -65,11 +65,11 @@ var noun_type_jira = {
                 summary: findMessage,
                 data : {
                     action : function () {
-                        window.getBrowser().selectedTab = window.getBrowser().addTab(noun_type_jira.searchJiraURL+text);
+		      Utils.openUrlInBrowser(noun_type_jira.searchJiraURL+text);
                     }
                 }
             });
-            
+
             var createMessage = 'Create new issue';
             suggestions.push({
                 text : createMessage,
@@ -77,12 +77,12 @@ var noun_type_jira = {
                 summary: createMessage,
                 data : {
                     action : function () {
-                        window.getBrowser().selectedTab = window.getBrowser().addTab(noun_type_jira.createJiraURL);
+                        Utils.openUrlInBrowser(noun_type_jira.createJiraURL);
                     }
                 }
             });
         }
-        
+
         if (!noun_type_jira.baseCrucibleURL) {
             message = 'Set Crucible url to : '+text;
             suggestions.push({
@@ -103,11 +103,11 @@ var noun_type_jira = {
                 summary: findMessage,
                 data : {
                     action : function() {
-                        window.getBrowser().selectedTab = window.getBrowser().addTab(noun_type_jira.searchCrucibleURL+text);
+                        Utils.openUrlInBrowser(noun_type_jira.searchCrucibleURL+text);
                     }
                 }
             });
-            
+
             var createMessage = 'Create new review';
             suggestions.push({
                 text : createMessage,
@@ -115,12 +115,12 @@ var noun_type_jira = {
                 summary: createMessage,
                 data : {
                     action : function() {
-                        window.getBrowser().selectedTab = window.getBrowser().addTab(noun_type_jira.createCrucibleURL);
+                        Utils.openUrlInBrowser(noun_type_jira.createCrucibleURL);
                     }
                 }
             });
         }
-        
+
         return suggestions;
     }
 };
@@ -134,7 +134,7 @@ CmdUtils.CreateCommand({
     homepage: 'http://rfobic.blogspot.com/2008/10/ubiquity-command-for-jira-crucible.html',
     help: 'You just need to enter or select some key word and command wil ldo the rest',
     takes: {"jira": noun_type_jira},
-    
+
     preview: function(pblock, noun) {
        // let template = "<div style='font-family:Sans;font-size:9px'><img src='https://jira.atlassian.com/favicon.ico' alt=''/>${action}<br/>${url}</div>";
         //var suggestions = noun.text;
