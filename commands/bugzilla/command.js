@@ -2,6 +2,27 @@ var CC = Components.Constructor;
 var LoginManager = Cc["@mozilla.org/login-manager;1"].getService(Ci.nsILoginManager);
 var LoginInfo = new CC("@mozilla.org/login-manager/loginInfo;1",Ci.nsILoginInfo,"init");
 
+var Rpc2jsonError = function(error) {
+    this.causedBy = error;
+}
+Rpc2jsonError.prototype = Error;
+
+var Json2rpcError = function(error) {
+    this.causedBy = error;
+};
+Json2rpcError.prototype = Error;
+
+var IgnorableError = function(error) {
+    this.causedBy = error;
+}
+IgnorableError.prototype = Error;
+
+Logger = {
+    log : function(message) {
+        dump('ubiquity.command.bugzilla> ' + message);
+    }
+};
+
 /**
  * Static Object containig metadata of the creator and of the command
  */
@@ -71,6 +92,14 @@ Session.prototype = {
 
 
 var Bugzilla = {
+    errors : {
+        unknown : 'Unknown error occured',
+        wrongURL : 'Error occured \nMight be incorrect XML-RPC URL was specified',
+        rpc2jsonError : 'Error occured during server request generation',
+        json2rpcError : 'Error occured during parsing server response',
+        serverCallError : 'Error occured during server call, most likely wrong bugzilla url was specified (check session urls)'
+    },
+    
     /**
      * Last accessed session
      * @type {Object}
@@ -128,22 +157,36 @@ var Bugzilla = {
      * @throws Error {Error} Throw exceprion if method responce contains fault
      */
     rpc : function(url, method, data) {
-        var methodResponce = this.rpc2json(new XML(jQuery.ajax({
-                    url : url,
-                    type : 'POST',
-                    data :  <methodCall>
-                                <methodName>{method}</methodName>
-                                {this.json2rpc(data)}
-                            </methodCall>.toXMLString(),
-                    async : false,
-                    contentType : 'text/xml',
-                    dataType : 'xml'
-                }).responseText.replace(/^<\?xml\s+version\s*=\s*(["'])[^\1]+\1[^?]*\?>/,"")));
-        
-        if (methodResponce.fault) {
-            throw methodResponce;
-        } else {
-            return methodResponce;
+        try {
+            var methodResponce = this.rpc2json(new XML(jQuery.ajax({
+                        url : url,
+                        type : 'POST',
+                        data :  <methodCall>
+                                    <methodName>{method}</methodName>
+                                    {this.json2rpc(data)}
+                                </methodCall>.toXMLString(),
+                        async : false,
+                        contentType : 'text/xml',
+                        dataType : 'xml'
+                    }).responseText.replace(/^<\?xml\s+version\s*=\s*(["'])[^\1]+\1[^?]*\?>/,"")));
+            
+            if (methodResponce.fault) {
+                throw methodResponce;
+            } else {
+                return methodResponce;
+            }
+        } catch (e if e instanceof Json2rpcError) {
+            displayMessage(Bugzilla.errors.json2rpcError);
+            Logger.log(e);
+            throw IgnorableError(e);
+        } catch (e if e instanceof Rpc2jsonError) {
+            displayMessage(Bugzilla.errors.rpc2jsonError);
+            Logger.log(e);
+            throw IgnorableError(e);
+        } catch (e) {
+            displayMessage(Bugzilla.errors.serverCallError)
+            Logger.log(e);
+            throw IgnorableError(e);
         }
     },
     
@@ -153,52 +196,56 @@ var Bugzilla = {
      * @returns {Object} JSON type object
      */
     rpc2json : function(xml) {
-        var self = arguments.callee;
-        var data = {};
-        for each (var member in xml.*) {
-            if (member.nodeKind() == 'text')
-                return new String(member);
-            
-            switch (member.name().toString()) {
-                case 'i4' :
-                case 'int' :
-                case 'double' :
-                    return new Number(member.text());
-                    break;
-                case 'string' :
-                    return new String(member.text());
-                    break;
-                case 'dateTime.iso8601' :
-                    return new Date(member.text());
-                    break;
-                case 'base64' :
-                    return member.text();
-                    break;
-                case 'value' :
-                case 'struct' :
-                case 'methodResponse' :
-                    return self(member);
-                    break;
-                case 'member' :
-                    data[member.name.text()] = self(member.value);
-                    break;
-                case 'fault' :
-                case 'params' :
-                case 'param' :
-                    data[member.name().toString()] = self(member);
-                    break;
-                case 'array' :
-                    var tempArray = [];
-                    for each (value in member.data.value) {
-                        tempArray.push(self(value));
-                    }
-                    return tempArray;
-                    break;
-                default :
-                    return null;
+        try {
+            var self = arguments.callee;
+            var data = {};
+            for each (var member in xml.*) {
+                if (member.nodeKind() == 'text')
+                    return new String(member);
+                
+                switch (member.name().toString()) {
+                    case 'i4' :
+                    case 'int' :
+                    case 'double' :
+                        return new Number(member.text());
+                        break;
+                    case 'string' :
+                        return new String(member.text());
+                        break;
+                    case 'dateTime.iso8601' :
+                        return new Date(member.text());
+                        break;
+                    case 'base64' :
+                        return member.text();
+                        break;
+                    case 'value' :
+                    case 'struct' :
+                    case 'methodResponse' :
+                        return self(member);
+                        break;
+                    case 'member' :
+                        data[member.name.text()] = self(member.value);
+                        break;
+                    case 'fault' :
+                    case 'params' :
+                    case 'param' :
+                        data[member.name().toString()] = self(member);
+                        break;
+                    case 'array' :
+                        var tempArray = [];
+                        for each (value in member.data.value) {
+                            tempArray.push(self(value));
+                        }
+                        return tempArray;
+                        break;
+                    default :
+                        return null;
+                }
             }
+            return data;
+        } catch(e) {
+            throw new Rpc2jsonError(e);
         }
-        return data;
     },
     
     /**
@@ -206,45 +253,49 @@ var Bugzilla = {
      * @returns {XML} E4X object
      */
     json2rpc : function(json) {
-        var self = arguments.callee;
-        if (!json) return <params/>
-        
-        switch (typeof json) {
-            case 'boolean':
-                return <boolean>{((json) ? '1' : '0')}</boolean>;
-            case 'number':
-                return (parseInt(json) == json) ? <int>{json}</int> : <double>{json}</double>;
-            case 'string':
-                return <string>{json}</string>;
-            case 'object':
-                if (json instanceof String)
+        try {
+            var self = arguments.callee;
+            if (!json) return <params/>
+            
+            switch (typeof json) {
+                case 'boolean':
+                    return <boolean>{((json) ? '1' : '0')}</boolean>;
+                case 'number':
+                    return (parseInt(json) == json) ? <int>{json}</int> : <double>{json}</double>;
+                case 'string':
                     return <string>{json}</string>;
-                else if (json instanceof Date)
-                    return <dateTime.iso8601>{json.getFullYear() + json.getMonth() + json.getDate() + 'T' + json.getHours() + ':' + json.getMinutes() + ':' + json.getSeconds()}</dateTime.iso8601>;
-                else if (json instanceof Array) {
-                    if (self == self.caller) {
-                        var tempArray = <array><data/></array>;
-                        for each(member in json)
-                            tempArray.data.appendChild(<value>{self(member)}</value>);
-                        return tempArray;
+                case 'object':
+                    if (json instanceof String)
+                        return <string>{json}</string>;
+                    else if (json instanceof Date)
+                        return <dateTime.iso8601>{json.getFullYear() + json.getMonth() + json.getDate() + 'T' + json.getHours() + ':' + json.getMinutes() + ':' + json.getSeconds()}</dateTime.iso8601>;
+                    else if (json instanceof Array) {
+                        if (self == self.caller) {
+                            var tempArray = <array><data/></array>;
+                            for each(member in json)
+                                tempArray.data.appendChild(<value>{self(member)}</value>);
+                            return tempArray;
+                        } else {
+                            result = <params/>
+                            for each(member in json)
+                                result.appendChild(<param><value>{self(member)}</value></param>);
+                            return result;
+                        }
                     } else {
-                        result = <params/>
-                        for each(member in json)
-                            result.appendChild(<param><value>{self(member)}</value></param>);
-                        return result;
+                        var struct = <struct/>;
+                        for (key in json)
+                            struct.appendChild(
+                                <member>
+                                    <name>{key}</name>
+                                    <value>{self(json[key])}</value>
+                                </member>
+                            );
+                        return struct;
                     }
-                } else {
-                    var struct = <struct/>;
-                    for (key in json)
-                        struct.appendChild(
-                            <member>
-                                <name>{key}</name>
-                                <value>{self(json[key])}</value>
-                            </member>
-                        );
-                    return struct;
-                }
-            break;
+                break;
+            }
+        } catch (e) {
+            throw new Json2rpcError(e);
         }
     },
     
@@ -297,10 +348,14 @@ var Bugzilla = {
     getInfo : function() {
         try {
             return this.rpc(Bugzilla.lastSession.url, 'Bugzilla.version').params.param.version;
+        } catch (e if e instanceof IgnorableError) {
+            // ignoring as exception was already analized and shown in ui
         } catch (e if e.fault && e.fault.faultString) {
+            // XML-RPC error
             displayMessage(e.fault.faultString);
         } catch (e) {
-            displayMessage(e);
+            displayMessage(Bugzilla.errors.unknown);
+            Logger.log(e);
         }
     },
     
@@ -356,13 +411,13 @@ Bugzilla.nouns = {
         },
         
         default : function() {
-            if (Bugzilla.lastSession)
-                return {
-                    text : Bugzilla.lastSession.nick,
-                    summary : Bugzilla.lastSession.nick,
-                    html : Bugzilla.lastSession.nick,
-                    data : Bugzilla.lastSession
-                };
+            [nick, session] = Bugzilla.lastSession ? [Bugzilla.lastSession.nick, Bugzilla.lastSession] : ['', null]
+            return {
+                text : nick,
+                summary : nick,
+                html : nick,
+                data : session
+           };
         }
     },
     
@@ -473,7 +528,7 @@ CmdUtils.CreateCommand({
     help : 'type bugzilla-session-remove name',
     
     takes : {
-        'session' : Bugzilla.nouns.session,
+        'session' : Bugzilla.nouns.session
     },
     
     preview : function(pblock, takes) {
@@ -500,6 +555,7 @@ CmdUtils.CreateCommand({
         }
     }
 });
+
 CmdUtils.CreateCommand({
     name : 'bugzilla-info-version',
     
@@ -514,7 +570,7 @@ CmdUtils.CreateCommand({
     help : 'type bugzilla-info-version',
     
     modifiers : {
-        'session' : Bugzilla.nouns.session,
+        'session' : Bugzilla.nouns.session
     },
     
     previewDelay : 200,
@@ -536,6 +592,7 @@ CmdUtils.CreateCommand({
     execute : function(takes, modifiers) {}
 });
 
+
 CmdUtils.CreateCommand({
     name : 'bugzilla-user',
     
@@ -553,7 +610,7 @@ CmdUtils.CreateCommand({
         'id' : noun_arb_text,
         'name' : noun_arb_text,
         'match' : noun_arb_text,
-        'session' : Bugzilla.nouns.session,
+        'session' : Bugzilla.nouns.session
     },
     
     previewDelay : 200,
@@ -598,7 +655,7 @@ CmdUtils.CreateCommand({
     },
     
     modifiers : {
-        'session' : Bugzilla.nouns.session,
+        'session' : Bugzilla.nouns.session
     },
     
     previewDelay : 300,
