@@ -189,24 +189,38 @@ var Bugzilla = {
      * 
      * @throws Error {Error} Throw exceprion if method responce contains fault
      */
-    rpc : function(url, method, data) {
+    rpc : function(url, method, data, callbak) {
         try {
-            var methodResponce = this.rpc2json(new XML(jQuery.ajax({
-                        url : url,
-                        type : 'POST',
-                        data :  <methodCall>
-                                    <methodName>{method}</methodName>
-                                    {this.json2rpc(data)}
-                                </methodCall>.toXMLString(),
-                        async : false,
-                        contentType : 'text/xml',
-                        dataType : 'xml'
-                    }).responseText.replace(/^<\?xml\s+version\s*=\s*(["'])[^\1]+\1[^?]*\?>/,"")));
+            var async = callbak ? true : false;
+            var request = {
+                url : url,
+                type : 'POST',
+                data :  <methodCall>
+                            <methodName>{method}</methodName>
+                            {this.json2rpc(data)}
+                        </methodCall>.toXMLString(),
+                async : async,
+                contentType : 'text/xml',
+                dataType : 'text'
+            };
             
-            if (methodResponce.fault) {
-                throw new RpcFault(methodResponce);
+            if (async) {
+                var self = this;
+                request.success = function requestSuccess(data, textStatus) {
+                    callbak(self.rpc2json(new XML(data.replace(/^<\?xml\s+version\s*=\s*(["'])[^\1]+\1[^?]*\?>/,""))));
+                };
+                request.error = function requestFailed(xhr, textStatus, errorThrown) {
+                    displayMessage('Have no clue if its going to be catched somewhere');
+                    throw new RpcFault(errorThrown);
+                };
+                return jQuery.ajax(request);
             } else {
-                return methodResponce;
+                var methodResponce = this.rpc2json(new XML(jQuery.ajax(request).responseText.replace(/^<\?xml\s+version\s*=\s*(["'])[^\1]+\1[^?]*\?>/,"")));
+                Logger.log(methodResponce.toSource());
+                if (methodResponce.fault)
+                    throw new RpcFault(methodResponce);
+                else
+                    return methodResponce;
             }
         } catch (e if e instanceof Json2rpcError) {
             displayMessage(Locale.errors.json2rpcError);
@@ -424,24 +438,31 @@ Bugzilla.nouns = {
         _name : 'Bug',
         
         suggest : function(text, html, makeSuggestion) {
-            var self = this;
+            //var self = this;
             
-            Utils.clearTimeout(self._timer);
+            //Utils.clearTimeout(self._timer);
             text = text.replace('bugzilla-get ','');
-            self._timer = Utils.setTimeout(function suggestAsync() {
-                var bugs = Bugzilla.getBugs([{ids : text.split(/\s+/), permissive : true}]);
-                
-                for each (var bug in bugs) {
-                    var bugId = bug.internals.bug_id.toString();
-                    displayMessage(bugId);
-                    makeSuggestion({
-                        text : bugId,
-                        summary : bugId,
-                        html : bugId,
-                        data : bug
-                    });
-                }
-            }, 300);
+            //self._timer = Utils.setTimeout(function suggestAsync() {
+            
+                //var bugs = Bugzilla.getBugs([{ids : text.split(/\s+/), permissive : true}]);
+                var params = [{ids : text.split(/\s+/), permissive : true}];
+                Bugzilla.rpc(Bugzilla.lastSession.url, 'Bug.get_bugs', params, function asyncSuggestion(data) {
+                    Logger.log(data.toSource())
+                    var bugs = data.params.param.bugs;
+                    
+                    for each (var bug in bugs) {
+                        var bugId = bug.internals.bug_id.toString();
+                        displayMessage(bugId);
+                        makeSuggestion({
+                            text : bugId,
+                            summary : bugId,
+                            html : bugId,
+                            data : bug
+                        });
+                    }
+                });
+            
+            //, 300);
             
             return [];
         },
