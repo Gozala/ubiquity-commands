@@ -5,24 +5,61 @@ var LoginInfo = new CC("@mozilla.org/login-manager/loginInfo;1",Ci.nsILoginInfo,
 var Rpc2jsonError = function(error) {
     this.causedBy = error;
 }
-Rpc2jsonError.prototype = Error;
+Rpc2jsonError.prototype.__proto__ = Error.prototype;
 
 var Json2rpcError = function(error) {
     this.causedBy = error;
 };
-Json2rpcError.prototype = Error;
+Json2rpcError.prototype.__proto__ = Error.prototype;
+
+RpcFault = function(error) {
+    this.causedBy = error;
+}
+RpcFault.prototype.__proto__ = Error.prototype;
 
 var IgnorableError = function(error) {
     this.causedBy = error;
 }
-IgnorableError.prototype = Error;
+IgnorableError.prototype.__proto__ = Error.prototype;
 
-Logger = {
+var Logger = {
     log : function(message) {
-        dump('ubiquity.command.bugzilla> ' + message);
+        if (message instanceof Error || message.stack) {
+            this.log(message.stack);
+            this.log(message.toSource())
+        } else
+            dump('ubiquity.command.bugzilla> ' + message.toSource() + '\n');
     }
 };
 
+var Locale = {
+    errors : {
+        unknown : 'Unknown error occured',
+        wrongURL : 'Error occured \nMight be incorrect XML-RPC URL was specified',
+        json2rpcError : 'Error occured during server request generation',
+        rpc2jsonError : 'Error occured during parsing server response',
+        serverCallError : 'Error occured during server call, most likely wrong bugzilla url was specified (check session urls)',
+        rpcFault : 'RPC Call returned fault'
+    },
+    
+    info_version : {
+        title : 'Bugzilla information : ',
+        version : 'Version : '
+    },
+    
+    user : {
+        title : 'User information : ',
+        label : ''
+    },
+    
+    bug : {
+        get : {
+            description : 'Gets information about particular bugs in the database.',
+            title : 'Information on : ',
+            label : ''
+        }
+    }
+}
 /**
  * Static Object containig metadata of the creator and of the command
  */
@@ -92,13 +129,7 @@ Session.prototype = {
 
 
 var Bugzilla = {
-    errors : {
-        unknown : 'Unknown error occured',
-        wrongURL : 'Error occured \nMight be incorrect XML-RPC URL was specified',
-        rpc2jsonError : 'Error occured during server request generation',
-        json2rpcError : 'Error occured during parsing server response',
-        serverCallError : 'Error occured during server call, most likely wrong bugzilla url was specified (check session urls)'
-    },
+    loader : <span>Loading... <img id="loader" src="chrome://global/skin/icons/loading_16.png" alt=""/></span>,
     
     /**
      * Last accessed session
@@ -113,14 +144,16 @@ var Bugzilla = {
     
     get lastSession() {
         if (!this._lastSession) {
-            var lastSessionName = this._prefs.getValue(this._prefNames.lastSession, null);
-            this._lastSession = lastSessionName ? new Session(lastSessionName) : null;
+            var lastSessionName = this._prefs.getValue(this._prefNames.sessions, this._prefNames.splitter).split(this._prefNames.splitter)[1];
+            this._lastSession = (lastSessionName && lastSessionName != '') ? new Session(lastSessionName) : null;
         }
         return  this._lastSession;
     },
     
     set lastSession(session) {
-        this._prefs.setValue(this._prefNames.lastSession, session.nick);
+        var nick = this._prefNames.splitter + session.nick;
+        var prefName = this._prefNames.sessions;
+        this._prefs.setValue(prefName, nick + this._prefs.getValue(prefName,'').replace(nick, ''));
         this._lastSession = session;
     },
     
@@ -171,22 +204,25 @@ var Bugzilla = {
                     }).responseText.replace(/^<\?xml\s+version\s*=\s*(["'])[^\1]+\1[^?]*\?>/,"")));
             
             if (methodResponce.fault) {
-                throw methodResponce;
+                throw new RpcFault(methodResponce);
             } else {
                 return methodResponce;
             }
         } catch (e if e instanceof Json2rpcError) {
-            displayMessage(Bugzilla.errors.json2rpcError);
-            Logger.log(e);
-            throw IgnorableError(e);
+            displayMessage(Locale.errors.json2rpcError);
+            Logger.log(e.causedBy);
+            throw new IgnorableError(e);
         } catch (e if e instanceof Rpc2jsonError) {
-            displayMessage(Bugzilla.errors.rpc2jsonError);
-            Logger.log(e);
-            throw IgnorableError(e);
+            displayMessage(Locale.errors.rpc2jsonError);
+            Logger.log(e.causedBy);
+            throw new IgnorableError(e);
+        } catch (e if e instanceof RpcFault) {
+            displayMessage(Locale.errors.rpcFault);
+            throw e;
         } catch (e) {
-            displayMessage(Bugzilla.errors.serverCallError)
+            displayMessage(Locale.errors.serverCallError)
             Logger.log(e);
-            throw IgnorableError(e);
+            throw new IgnorableError(e);
         }
     },
     
@@ -299,89 +335,46 @@ var Bugzilla = {
         }
     },
     
-    /**
-     * Makes login to the JIRA XML-RPC Service and stores session id in the session memebr.
-     * @private
-     * @param user {String} Username
-     * @param password {String}
-     * @returns {void}
-     */
-    _login : function(user, password) {
-        try {
-            this._session = this.rpc2json(this.rpc(this.url, 'jira1.login',
-                <params>
-                    <param>
-                        <value>{user}</value>
-                    </param>
-                    <param>
-                        <value>{password}</value>
-                    </param>
-                </params>).params.param);
-        } catch (e) {
-            if (e instanceof XML)
-                displayMessage(e.fault.value.struct.member.value[0]);
-            else
-                displayMessage(e.toString());
-        }
-    },
-    
-    getIssue : function(key) {
-        try {
-            return this.rpc2json(this.rpc(this.url, 'jira1.getIssue',
-                <params>
-                    <param>
-                        <value>{this.session}</value>
-                    </param>
-                    <param>
-                        <value>{key}</value>
-                    </param>
-                </params>
-                ).params.param);
-        } catch (e) {
-            if (e instanceof XML)
-                displayMessage(e.fault.value.struct.member.value[0]);
-            else
-                displayMessage(e.toString());
-        }
-    },
     
     getInfo : function() {
         try {
             return this.rpc(Bugzilla.lastSession.url, 'Bugzilla.version').params.param.version;
         } catch (e if e instanceof IgnorableError) {
             // ignoring as exception was already analized and shown in ui
-        } catch (e if e.fault && e.fault.faultString) {
-            // XML-RPC error
-            displayMessage(e.fault.faultString);
+        } catch (e if e instanceof RpcFault) {
+                if (e.causedBy.fault && e.causedBy.fault.faultString)
+                    displayMessage(e.causedBy.fault.faultString.toString());
         } catch (e) {
-            displayMessage(Bugzilla.errors.unknown);
+            displayMessage(Locale.errors.unknown);
             Logger.log(e);
         }
     },
     
     getUsers : function(params) {
         try {
-            dump('\n\n');
-            dump(this.rpc(Bugzilla.lastSession.url, 'User.get', params).toSource());
-            dump('\n\n');
-        } catch (e if e.fault && e.fault.faultString) {
-            displayMessage(e.fault.faultString.toString());
-            dump('\nError> ' + e.fault.faultString);
+            var users = this.rpc(Bugzilla.lastSession.url, 'User.get', params);
+        } catch (e if e instanceof IgnorableError) {
+            // ignoring as exception was already analized and shown in ui
+        } catch (e if e instanceof RpcFault) {
+                if (e.causedBy.fault && e.causedBy.fault.faultString)
+                    displayMessage(e.causedBy.fault.faultString.toString());
         } catch (e) {
-            displayMessage(e);
+            displayMessage(Locale.errors.unknown);
+            Logger.log(e);
         }
     },
     
     getBugs : function(params) {
         try {
             return this.rpc(Bugzilla.lastSession.url, 'Bug.get_bugs', params).params.param.bugs;
-        } catch (e if e.fault && e.fault.faultString) {
-            displayMessage(e.fault.faultString.toString());
-            dump('\nError> ' + e.fault.faultString);
-            dump('\nError> ' + e.toSource());
+        } catch (e if e instanceof IgnorableError) {
+            // ignoring as exception was already analized and shown in ui
+        } catch (e if e instanceof RpcFault) {
+                if (e.causedBy.fault && e.causedBy.fault.faultString)
+                    displayMessage(e.causedBy.fault.faultString.toString());
         } catch (e) {
-            displayMessage(e);
-            dump('\nError> ' + e.stack);
+            displayMessage(Locale.errors.unknown);
+            Logger.log(e);
         }
     }
 };
@@ -392,6 +385,7 @@ Bugzilla.nouns = {
         
         suggest : function(text, html) {
             var sessions = Bugzilla._prefs.getValue(Bugzilla._prefNames.sessions, '').split(Bugzilla._prefNames.splitter);
+            sessions.shift();
             var filter = new RegExp('[\s\S]*' + text + '[\s\S]*','i');
             var matchedsuggestions = [];
             var unmatchedSuggestions = [];
@@ -411,42 +405,47 @@ Bugzilla.nouns = {
         },
         
         default : function() {
-            [nick, session] = Bugzilla.lastSession ? [Bugzilla.lastSession.nick, Bugzilla.lastSession] : ['', null]
-            return {
-                text : nick,
-                summary : nick,
-                html : nick,
-                data : session
-           };
+            return this.suggest('');
+            
+            var sessions = Bugzilla._prefs.getValue(Bugzilla._prefNames.sessions, '').split(Bugzilla._prefNames.splitter);
+            sessions.push ({
+                text : Bugzilla.lastSession.nick,
+                summary : Bugzilla.lastSession.nick,
+                html : Bugzilla.lastSession.nick,
+                data : Bugzilla.lastSession 
+            });
+            
+            return sessions;
         }
     },
     
     bugByID : {
+        _timer : null,
         _name : 'Bug',
         
-        suggest : function(text, html) {
-            var suggestions = [];
-            var bugs = Bugzilla.getBugs([{ids : text.split(/\s+/), permissive : true}]);
+        suggest : function(text, html, makeSuggestion) {
+            var self = this;
             
-            for each (var bug in bugs) {
-                suggestions.push({
-                    text : bug.internals.bug_id,
-                    summary : bug.internals.bug_id,
-                    html : bug.internals.bug_id,
-                    data : bug
-                });
-            }
-            return suggestions;
+            Utils.clearTimeout(self._timer);
+            text = text.replace('bugzilla-get ','');
+            self._timer = Utils.setTimeout(function suggestAsync() {
+                var bugs = Bugzilla.getBugs([{ids : text.split(/\s+/), permissive : true}]);
+                
+                for each (var bug in bugs) {
+                    var bugId = bug.internals.bug_id.toString();
+                    displayMessage(bugId);
+                    makeSuggestion({
+                        text : bugId,
+                        summary : bugId,
+                        html : bugId,
+                        data : bug
+                    });
+                }
+            }, 300);
+            
+            return [];
         },
         
-        default : function() {
-            return {
-                text : 'No bugs being found',
-                summary : 'No bugs being found',
-                html : '',
-                data : {}
-            };
-        }
     }
 };
 
@@ -579,14 +578,19 @@ CmdUtils.CreateCommand({
         Bugzilla.lastSession = modifiers.session.data;
         pblock.innerHTML =
             <div>
-                <b>{'Bugzilla information : '+ modifiers.session.text}</b>
+                <b>{Locale.info_version.title + modifiers.session.text}</b>
                 <br/>
                 <br/>
-                <div>
-                    <b>{ 'Version : '}</b>
-                    { Bugzilla.getInfo() }
+                <div id="result">
+                    {Bugzilla.loader}
                 </div>
             </div>.toXMLString();
+        
+        jQuery('#result', pblock).html(
+                <div>
+                    <b>{Locale.info_version.version}</b>
+                    {Bugzilla.getInfo()}
+                </div>.toXMLString());
     },
     
     execute : function(takes, modifiers) {}
@@ -604,12 +608,12 @@ CmdUtils.CreateCommand({
     
     homepage : MetaData.homepage,
     
-    //help : 'type bugzilla-info-version',
+    help : '',
     
     modifiers : {
         'id' : noun_arb_text,
-        'name' : noun_arb_text,
-        'match' : noun_arb_text,
+        //'name' : noun_arb_text,
+        //'match' : noun_arb_text,
         'session' : Bugzilla.nouns.session
     },
     
@@ -619,11 +623,19 @@ CmdUtils.CreateCommand({
         Bugzilla.lastSession = modifiers.session.data;
         pblock.innerHTML =
             <div>
-                <b>{'User information : '+ modifiers.id.text}</b>
+                <b>{Locale.user.title + modifiers.id.text}</b>
                 <br/>
                 <br/>
                 <div>
-                    <b>{ 'Version : '}</b>
+                    <div id="result">
+                        {Bugzilla.loader}
+                    </div>
+                </div>
+            </div>.toXMLString();
+            
+            jQuery('#result', pblock).html(
+                 <div>
+                    <b>{Locale.user.label}</b>
                     {Bugzilla.getUsers({
                         params : {
                             param : {
@@ -631,8 +643,7 @@ CmdUtils.CreateCommand({
                             }
                         }
                     })}
-                </div>
-            </div>.toXMLString();
+                </div>.toXMLString());
     },
     
     execute : function(takes, modifiers) {}
@@ -643,7 +654,7 @@ CmdUtils.CreateCommand({
     
     icon : MetaData.icon,
     
-    description : 'Gets information about particular bugs in the database.',
+    description : Locale.bug.get.description,
     
     author : MetaData.author,
     
@@ -662,29 +673,23 @@ CmdUtils.CreateCommand({
     
     preview : function(pblock, takes, modifiers) {
         Bugzilla.lastSession = modifiers.session.data;
-        var bug = takes.data.internals;
         pblock.innerHTML =
             <div>
-                <b><u>{'Bug '+ bug.bug_id}</u></b>
+                <b>{Locale.bug.get.title + takes.text}</b>
                 <br/>
                 <br/>
-                <b>{bug.short_desc}</b>
-                <br/><br/>
                 <div>
-                    {bug.resolution ? <div><span>{'Resolution : '}</span><span>{bug.resolution}</span></div> : ''}
-                    {bug.version ? <div><span>{'Version : '}</span><span>{bug.version}</span></div> : ''}
-                    {bug.version ? <div><span>{'Target Milestone : '}</span><span>{bug.target_milestone}</span></div> : ''}
-                    <br/>
-                    {bug.version ? <div><span>{'Status : '}</span><span>{bug.bug_status}</span></div> : ''}
-                    {bug.version ? <div><span>{'Priority : '}</span><span>{bug.priority}</span></div> : ''}
-                    {bug.version ? <div><span>{'Severity : '}</span><span>{bug.bug_severity}</span></div> : ''}
-                    <br/>
-                    {bug.version ? <div><span>{'Platform : '}</span><span>{bug.rep_platform}</span></div> : ''}
-                    {bug.version ? <div><span>{'OS : '}</span><span>{bug.op_sys}</span></div> : ''}
-                    <br/>
-                    {bug.bug_file_loc != '' ? <div><span>{'Location : '}</span><u><a href={bug.bug_file_loc}>{bug.bug_file_loc}</a></u></div> : ''}
+                    <div id="result">
+                        {Bugzilla.loader}
+                    </div>
                 </div>
             </div>.toXMLString();
+            
+            jQuery('#result', pblock).html(
+                 <div>
+                    <b>{Locale.bug.get.label}</b>
+                    {'stub  '}
+                </div>.toXMLString());
     },
     
     execute : function(takes, modifiers) {}
