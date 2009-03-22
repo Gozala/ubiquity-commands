@@ -1,6 +1,7 @@
 var CC = Components.Constructor;
 var LoginManager = Cc["@mozilla.org/login-manager;1"].getService(Ci.nsILoginManager);
 var LoginInfo = new CC("@mozilla.org/login-manager/loginInfo;1",Ci.nsILoginInfo,"init");
+var $ = jQuery;
 
 var Rpc2jsonError = function(error) {
     this.causedBy = error;
@@ -55,11 +56,70 @@ var Locale = {
     bug : {
         get : {
             description : 'Gets information about particular bugs in the database.',
-            title : 'Information on : ',
-            label : ''
+            title : 'Bug - ',
+            cf_blocking_fennec : '@cf_blocking_fennec',
+            priority : 'Priority',
+            bug_id : 'Bug ID',
+            _multi_selects: '@multi_selects',
+            bug_file_loc: 'URL',
+            cclist_accessible: '@cclist_accessible',
+            rep_platform: 'Platform',
+            product_id: '@Product (need text not id)',
+            creation_ts: 'Reported',
+            assigned_to: '@Assigned to',
+            short_desc: 'Description',
+            qa_contact: '@qa_contact',
+            everconfirmed: '@everconfirmed',
+            status_whiteboard: 'Whiteboard',
+            bug_severity: 'Importance',
+            bug_status: 'Status',
+            delta_ts: '@delta_ts',
+            version: 'Version',
+            reporter_id: '@reporter_id (need reporter)',
+            component_id: '@component_id (need Component)',
+            resolution: 'Resolution',
+            reporter_accessible: '@reporter_accessible',
+            target_milestone: 'Target Milestone',
+            alias: 'Alias',
+            op_sys: 'OS',
+            id: 'ID',
+            last_change_time: 'Modified',
+            creation_time: 'Reported'
         }
     }
-}
+};
+
+var Template = {
+    style : <style>
+        {'.fixed {text-decoration: line-through;}'}
+        {'a {text-decoration: underline;}'}
+    </style>,
+    loader : <span>Loading... <img id="loader" src="chrome://global/skin/icons/loading_16.png" alt=""/></span>,
+    span : function(data) {
+        if (data) {
+            if (data instanceof Array) {
+                text = '';
+                for each (var part in data)
+                    text += part && part != '' ? ' ' + part : ''
+                return this.span(text);
+            } else {
+                return (data != '') ? <span>{data}</span> : '';
+            }
+        } else {
+            return '';
+        }
+    },
+    
+    line : function(data, label) {
+        var text = this.span(data);
+        return (data != '') ? <div>{label ? <strong>{label}{' : '}</strong> : ''}{text}</div> : '';
+    },
+    
+    link : function(label, url) {
+        return (label && label != '') ? <a href={url ? url : label}>{label}</a> : '';
+    }
+};
+
 /**
  * Static Object containig metadata of the creator and of the command
  */
@@ -129,8 +189,6 @@ Session.prototype = {
 
 
 var Bugzilla = {
-    loader : <span>Loading... <img id="loader" src="chrome://global/skin/icons/loading_16.png" alt=""/></span>,
-    
     /**
      * Last accessed session
      * @type {Object}
@@ -213,10 +271,9 @@ var Bugzilla = {
                     displayMessage('Have no clue if its going to be catched somewhere');
                     throw new RpcFault(errorThrown);
                 };
-                return jQuery.ajax(request);
+                return $.ajax(request);
             } else {
-                var methodResponce = this.rpc2json(new XML(jQuery.ajax(request).responseText.replace(/^<\?xml\s+version\s*=\s*(["'])[^\1]+\1[^?]*\?>/,"")));
-                Logger.log(methodResponce.toSource());
+                var methodResponce = this.rpc2json(new XML($.ajax(request).responseText.replace(/^<\?xml\s+version\s*=\s*(["'])[^\1]+\1[^?]*\?>/,"")));
                 if (methodResponce.fault)
                     throw new RpcFault(methodResponce);
                 else
@@ -263,7 +320,15 @@ var Bugzilla = {
                         return new String(member.text());
                         break;
                     case 'dateTime.iso8601' :
-                        return new Date(member.text());
+                        var [ ,year, month, date, hours, minutes, seconds] = member.text().match(/^(\d{4})(\d{2})(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+                        var dateTime = new Date();
+                        dateTime.setFullYear(year);
+                        dateTime.setMonth(month);
+                        dateTime.setDate(date);
+                        dateTime.setHours(hours);
+                        dateTime.setMinutes(minutes);
+                        dateTime.setSeconds(seconds);
+                        return dateTime;
                         break;
                     case 'base64' :
                         return member.text();
@@ -378,9 +443,14 @@ var Bugzilla = {
         }
     },
     
-    getBugs : function(params) {
+    getBugs : function(params, callback) {
         try {
-            return this.rpc(Bugzilla.lastSession.url, 'Bug.get_bugs', params).params.param.bugs;
+            if (callback)
+                this.rpc(Bugzilla.lastSession.url, 'Bug.get_bugs', params, function(data) {
+                    callback(data.params.param.bugs);
+                });
+            else 
+                return this.rpc(Bugzilla.lastSession.url, 'Bug.get_bugs', params).params.param.bugs;
         } catch (e if e instanceof IgnorableError) {
             // ignoring as exception was already analized and shown in ui
         } catch (e if e instanceof RpcFault) {
@@ -390,13 +460,23 @@ var Bugzilla = {
             displayMessage(Locale.errors.unknown);
             Logger.log(e);
         }
+        return null;
+    }
+};
+
+Bugzilla.utils = {
+    getBugLink : function(bugId, url) {
+        return url + 'show_bug.cgi?id=' + bugId;
+    },
+    
+    getXMLRPCLink : function(url) {
+        return url + 'xmlrpc.cgi'
     }
 };
 
 Bugzilla.nouns = {
     session : {
         _name : 'Session',
-        
         suggest : function(text, html) {
             var sessions = Bugzilla._prefs.getValue(Bugzilla._prefNames.sessions, '').split(Bugzilla._prefNames.splitter);
             sessions.shift();
@@ -428,31 +508,20 @@ Bugzilla.nouns = {
                 html : Bugzilla.lastSession.nick,
                 data : Bugzilla.lastSession 
             });
-            
             return sessions;
         }
     },
     
     bugByID : {
-        _timer : null,
         _name : 'Bug',
-        
         suggest : function(text, html, makeSuggestion) {
-            //var self = this;
-            
-            //Utils.clearTimeout(self._timer);
+            var suggestions = [];
             text = text.replace('bugzilla-get ','');
-            //self._timer = Utils.setTimeout(function suggestAsync() {
-            
-                //var bugs = Bugzilla.getBugs([{ids : text.split(/\s+/), permissive : true}]);
-                var params = [{ids : text.split(/\s+/), permissive : true}];
-                Bugzilla.rpc(Bugzilla.lastSession.url, 'Bug.get_bugs', params, function asyncSuggestion(data) {
-                    Logger.log(data.toSource())
-                    var bugs = data.params.param.bugs;
-                    
+            var params = [{ids : text.split(/\s+/), permissive : true}];
+            try {
+                Bugzilla.getBugs(params, function asyncSuggest(bugs) {
                     for each (var bug in bugs) {
-                        var bugId = bug.internals.bug_id.toString();
-                        displayMessage(bugId);
+                        var bugId = bug.id.toString();
                         makeSuggestion({
                             text : bugId,
                             summary : bugId,
@@ -461,12 +530,31 @@ Bugzilla.nouns = {
                         });
                     }
                 });
+            } catch (e) {
+                displayMessage(Locale.errors.unknown);
+                Logger.log(e.toSource());
+            }
             
-            //, 300);
+            // Workaround for async suggestions bug
+            // https://bugzilla.mozilla.org/show_bug.cgi?id=484615
+            var [workaround] = Bugzilla.getBugs([{ids : ['484615'], permissive : true}]);
+            if (workaround.internals.resolution.toString().toLowerCase() != 'fixed')
+                suggestions.push({
+                    text : workaround.id,
+                    summary : workaround.id,
+                    html : workaround.id,
+                    data : workaround
+                });
             
-            return [];
+            return suggestions;
         },
-        
+        default : function(text, html, makeSuggestion) {
+            return {
+                text : 'test',
+                summary : 'test',
+                html : 'test'
+            }
+        }
     }
 };
 
@@ -603,11 +691,11 @@ CmdUtils.CreateCommand({
                 <br/>
                 <br/>
                 <div id="result">
-                    {Bugzilla.loader}
+                    {Template.loader}
                 </div>
             </div>.toXMLString();
         
-        jQuery('#result', pblock).html(
+        $('#result', pblock).html(
                 <div>
                     <b>{Locale.info_version.version}</b>
                     {Bugzilla.getInfo()}
@@ -620,17 +708,11 @@ CmdUtils.CreateCommand({
 
 CmdUtils.CreateCommand({
     name : 'bugzilla-user',
-    
     icon : MetaData.icon,
-    
     description : 'Gets information about user accounts in Bugzilla',
-    
     author : MetaData.author,
-    
     homepage : MetaData.homepage,
-    
     help : '',
-    
     modifiers : {
         'id' : noun_arb_text,
         //'name' : noun_arb_text,
@@ -649,12 +731,12 @@ CmdUtils.CreateCommand({
                 <br/>
                 <div>
                     <div id="result">
-                        {Bugzilla.loader}
+                        {Template.loader}
                     </div>
                 </div>
             </div>.toXMLString();
             
-            jQuery('#result', pblock).html(
+            $('#result', pblock).html(
                  <div>
                     <b>{Locale.user.label}</b>
                     {Bugzilla.getUsers({
@@ -672,46 +754,63 @@ CmdUtils.CreateCommand({
 
 CmdUtils.CreateCommand({
     name : 'bugzilla-get',
-    
     icon : MetaData.icon,
-    
     description : Locale.bug.get.description,
-    
     author : MetaData.author,
-    
     homepage : MetaData.homepage,
-    
     //help : 'type bugzilla-info-version',
     takes : {
         'id' : Bugzilla.nouns.bugByID
     },
-    
     modifiers : {
         'session' : Bugzilla.nouns.session
     },
-    
     previewDelay : 300,
     
     preview : function(pblock, takes, modifiers) {
         Bugzilla.lastSession = modifiers.session.data;
+        var bug = takes.data;
+        
         pblock.innerHTML =
             <div>
-                <b>{Locale.bug.get.title + takes.text}</b>
-                <br/>
-                <br/>
-                <div>
-                    <div id="result">
-                        {Bugzilla.loader}
-                    </div>
+                <h2 id="title">
+                    {Locale.bug.get.title}
+                    <span id="bug">{bug.id}</span>
+                </h2>
+                <div id="result">
+                    {Template.loader}
                 </div>
             </div>.toXMLString();
             
-            jQuery('#result', pblock).html(
+            Logger.log(bug.internals.qa_contact.toSource())
+            $('#result', pblock).html(
                  <div>
-                    <b>{Locale.bug.get.label}</b>
-                    {'stub  '}
+                    {Template.style}
+                    {Template.line(bug.alias, Locale.bug.get.alias)}
+                    {Template.line(bug.summary)}
+                    <br/>
+                    {Template.line([bug.internals.bug_status, bug.internals.resolution], Locale.bug.get.bug_status)}
+                    {Template.line(bug.internals.status_whiteboard, Locale.bug.get.status_whiteboard)}
+                    <br/>
+                    {Template.line(bug.internals.product_id, Locale.bug.get.product_id)}
+                    {Template.line(bug.internals.component_id, Locale.bug.get.component_id)}
+                    {Template.line(bug.internals.version, Locale.bug.get.version)}
+                    {Template.line([bug.internals.rep_platform, bug.internals.op_sys], Locale.bug.get.rep_platform)}
+                    <br/>
+                    {Template.line([bug.internals.priority, bug.internals.bug_severity], Locale.bug.get.bug_severity)}
+                    {Template.line(bug.internals.target_milestone, Locale.bug.get.target_milestone)}
+                    {Template.line(bug.internals.assigned_to, Locale.bug.get.assigned_to)}
+                    {Template.line(bug.internals.qa_contact, Locale.bug.get.qa_contact)}
+                    <br/>
+                    {Template.line([bug.creation_time.toLocaleString()], Locale.bug.get.creation_time)}
+                    {Template.line(bug.last_change_time.toLocaleString(), Locale.bug.get.last_change_time)}
+                    
+                    {Template.line(Template.link(bug.internals.bug_file_loc), Locale.bug.get.bug_file_loc)}
                 </div>.toXMLString());
+            $('#bug', pblock).addClass(bug.internals.resolution.toString().toLowerCase());
     },
     
-    execute : function(takes, modifiers) {}
-});
+    execute : function(takes, modifiers) {
+        Utils.openUrlInBrowser(Bugzilla.utils.getBugLink(takes.text, session.data.url));
+    }
+});
