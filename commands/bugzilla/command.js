@@ -2,6 +2,154 @@ var CC = Components.Constructor;
 var LoginManager = Cc["@mozilla.org/login-manager;1"].getService(Ci.nsILoginManager);
 var LoginInfo = new CC("@mozilla.org/login-manager/loginInfo;1",Ci.nsILoginInfo,"init");
 var $ = jQuery;
+var Prefs = Application.prefs;
+var notify = function(message) {
+    displayMessage({
+        title : message.title || '',
+        text : message.text || message,
+        icon : Template.icon
+    });
+};
+
+/**
+ * Mutates noun to the adjective
+ * Adds dependency resolver
+ * Adds suggestion history cache
+ * Adds delay support for suggestions
+ */
+CmdUtils.CreateAdjective = function CreateAdjective (noun) {
+    /**
+     * Checks all the dependencies and returns true if all of them are satisfied
+     * @returns {boolean}
+     */
+    noun.__defineGetter__('reliable', function relible(){
+        for each (var dependency in this.dependencies)
+            if (!dependency.reliable) return false
+        return true;
+    }),
+    /**
+     * Delay which will happen before parser will satrt parseing input
+     * If input will change before suggestions will be canceled
+     * @type Integer number of miliseconds
+     */
+    noun.delay = noun.delay || 0;
+    /**
+     * Length length
+     */
+    noun.memory = noun.memory || 10;
+    /**
+     * This property is used to store timer id for the delayed suggestions
+     * @type {string}
+     */
+    noun._timerId = null;
+    /**
+     * Saving original suggest in order to be able to use it after mutation
+     */
+    noun._suggest = noun.suggest;
+    /**
+     * returns suggestions
+     */
+    noun.suggest = function suggest() {
+        if (this.reliable) {
+            Utils.clearTimeout(this._timerId);
+            var args = arguments;
+            if (this.delay == 0)
+                return noun._suggest.apply(this, args);
+            // If mutate
+            this._timerId = Utils.setTimeout(function(){
+                noun._suggest.apply(noun, args);
+            }, this.delay);
+            
+            // Workaround for async suggestions bug
+            // https://bugzilla.mozilla.org/show_bug.cgi?id=484615
+            return [{
+                text : 'BUG 484615',
+                summary : 'Workaround for bug 484615',
+                html : '<a href="https://bugzilla.mozilla.org/show_bug.cgi?id=484615">BUG 484615</a>',
+                data : {summary:(new String("Ubiquity Asynchronous Noun Suggestions are not working")), internals:{cf_blocking_fennec:(new String("---")), priority:(new String("--")), bug_id:(new Number(484615)), _multi_selects:[], bug_file_loc:(new String("http://groups.google.com/group/ubiquity-firefox/browse_thread/thread/d556c431e40ff9aa")), cclist_accessible:(new Number(1)), rep_platform:(new String("x86")), product_id:(new Number(40)), creation_ts:(new String("2009.03.21 17:46")), assigned_to:(new Number(298253)), short_desc:(new String("Ubiquity Asynchronous Noun Suggestions are not working")), qa_contact:(new Number(247525)), everconfirmed:(new Number(0)), status_whiteboard:(new String("")), bug_severity:(new String("major")), bug_status:(new String("UNCONFIRMED")), delta_ts:(new String("2009-03-21 17:46:06")), version:(new String("unspecified")), reporter_id:(new Number(295373)), component_id:(new Number(757)), resolution:(new String("")), reporter_accessible:(new Number(1)), target_milestone:(new String("--")), alias:{}, op_sys:(new String("Mac OS X"))}, id:(new Number(484615)), last_change_time:(new Date(1240328766122)), creation_time:(new Date(1240328760122)), alias:(new String(""))}
+            }];
+        }
+        return [];
+    };
+    /**
+     * Saving original default in order to be able to use it after mutation
+     */
+    noun._default = noun.default;
+    /**
+     * Proxy function for noun default that is enabled only in case if noun has default
+     * Used to prevent any actions if object is not reliable 
+     * @returns {Array}
+     */
+    noun.default = !noun.default ? noun.default : function() {
+        if (this.reliable) {
+            return this._default.apply(this, arguments);
+        }
+        else
+            return [];
+    };
+    /**
+     * If true suggestion data will be cached.
+     */
+    noun.cache = noun.cache || false;
+    /**
+     * History of suggestion
+     */
+    noun.history = function history(limit, callback, self) {
+        self = self || arguments.callee.caller;
+        var suggestions = [];
+        try {
+            suggestions = Utils.decodeJson(Application.prefs.getValue('ubiquity.adjectives.' + this._name + '.history', '[]')).slice(0, limit);
+        } catch(e) {}
+        
+        if (this.cache) {
+            if (callback)
+                suggestions.forEach(function(suggestion) {
+                    callback.call(self, suggestion);
+                });
+        } else {
+            if (callback)
+                suggestions.forEach(function(suggestion) {
+                    this.suggest(suggestion.text, suggestion.html, function(data) {
+                        callback.call(self, data);
+                    });
+                }, this);
+            else
+                return suggestions.map(function(suggestion) {
+                    return this.suggest(suggestion.text, suggestion.html)[0];
+                }, this);
+        }
+        return suggestions;
+    };
+    /**
+     * Adds suggestion to the history
+     */
+    noun.addHistory = function addHistory(suggestion) {
+        if (suggestion && suggestion.text) {
+            try {
+                var suggestions = Utils.decodeJson(Application.prefs.getValue('ubiquity.adjectives.' + this._name + '.history', '[]')).filter(function(element){
+                    return (element.text != suggestion.text);
+                }).slice(0, this.memory - 1);
+                suggestions.unshift(suggestion);
+                Application.prefs.setValue('ubiquity.adjectives.' + this._name + '.history', Utils.encodeJson(suggestions));
+            } catch (e) {}
+        }
+    };
+    /**
+     * Removes suggestion from history
+     */
+    noun.removeHistory = function removeHistory(suggestion) {
+        if (suggestion) {
+            try {
+                var suggestions = Utils.decodeJson(Application.prefs.getValue('ubiquity.adjectives.' + this._name + '.history', '[]')).filter(function(element){
+                    return (element.text != suggestion.text);
+                });
+                Application.prefs.setValue('ubiquity.adjectives.' + this._name + '.history', Utils.encodeJson(suggestions));
+            } catch(e) {}
+        }
+    };
+    
+    return noun;
+};
 
 var Rpc2jsonError = function(error) {
     this.causedBy = error;
@@ -23,6 +171,209 @@ var IgnorableError = function(error) {
 }
 IgnorableError.prototype.__proto__ = Error.prototype;
 
+/**
+ * Makes rpc calls to the JIRA XML-RPC Service and returns results as XML
+ * Example:
+ * rpc('http://jira.atlassian.com/rpc/xmlrpc','jira1.login',
+ *      <params>
+ *          <param>
+ *              <value>{user}</value>
+ *           </param>
+ *           <param>
+ *              <value>{password}</value>
+ *           </param>
+ *      </params>);
+ * 
+ * 
+ * @param url {String} XML-RPC Service url
+ * @param method {String} Name of the method to be called
+ * @param data {XML} Data to be passed to the Remote Procedure
+ * 
+ * @throws Error {Error} Throw exceprion if method responce contains fault
+ */
+var rpc = function rpc(url, method, data, callbak) {
+    try {
+        var async = callbak ? true : false;
+        var request = {
+            url : url,
+            type : 'POST',
+            data :  <methodCall>
+                        <methodName>{method}</methodName>
+                        {json2rpc(data)}
+                    </methodCall>.toXMLString(),
+            async : async,
+            contentType : 'text/xml',
+            dataType : 'text'
+        };
+        
+        if (async) {
+            request.success = function requestSuccess(data, textStatus) {
+                var responce = rpc2json(new XML(data.replace(/^<\?xml\s+version\s*=\s*(["'])[^\1]+\1[^?]*\?>/,"")));
+                if (responce.fault) {
+                    notify({
+                        title : Locale.errors.rpcFault,
+                        text : responce.fault.faultString.toString()
+                    });
+                } else
+                    callbak(responce);
+            };
+            request.error = function requestFailed(xhr, textStatus, errorThrown) {
+                notify('Have no clue if its going to be catched somewhere');
+                throw new RpcFault(errorThrown);
+            };
+            return $.ajax(request);
+        } else {
+            var responce = rpc2json(new XML($.ajax(request).responseText.replace(/^<\?xml\s+version\s*=\s*(["'])[^\1]+\1[^?]*\?>/,"")));
+            if (responce.fault)
+                throw new RpcFault(responce);
+            else
+                return responce;
+        }
+    } catch (e if e instanceof Json2rpcError) {
+        notify({
+            title : Locale.errors.json2rpcError,
+            text : e.causedBy.message
+        });
+        Logger.log(e.causedBy);
+        throw new IgnorableError(e);
+    } catch (e if e instanceof Rpc2jsonError) {
+        notify({
+            title : Locale.errors.rpc2jsonError,
+            text : e.causedBy.message
+        });
+        Logger.log(e.causedBy);
+        throw new IgnorableError(e);
+    } catch (e if e instanceof RpcFault) {
+        notify({
+            title : Locale.errors.rpcFault,
+            text : responce.fault.faultString.toString()
+        });
+        throw new IgnorableError(e);
+    } catch (e) {
+        notify({
+            title : Locale.errors.serverCallError,
+            text : e.message
+        });
+        Logger.log(e);
+        throw new IgnorableError(e);
+    }
+};
+
+/**
+ * Recursive function converts responce of the RPC
+ * call to the JSON Object
+ * @returns {Object} JSON type object
+ */
+var rpc2json = function rpc2json(xml) {
+    try {
+        var data = {};
+        for each (var member in xml.*) {
+            if (member.nodeKind() == 'text')
+                return new String(member);
+            
+            switch (member.name().toString()) {
+                case 'i4' :
+                case 'int' :
+                case 'double' :
+                    return new Number(member.text());
+                    break;
+                case 'string' :
+                    return new String(member.text());
+                    break;
+                case 'dateTime.iso8601' :
+                    var [ ,year, month, date, hours, minutes, seconds] = member.text().match(/^(\d{4})(\d{2})(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
+                    var dateTime = new Date();
+                    dateTime.setFullYear(year);
+                    dateTime.setMonth(month);
+                    dateTime.setDate(date);
+                    dateTime.setHours(hours);
+                    dateTime.setMinutes(minutes);
+                    dateTime.setSeconds(seconds);
+                    return dateTime;
+                    break;
+                case 'base64' :
+                    return member.text();
+                    break;
+                case 'value' :
+                case 'struct' :
+                case 'methodResponse' :
+                    return rpc2json(member);
+                    break;
+                case 'member' :
+                    data[member.name.text()] = rpc2json(member.value);
+                    break;
+                case 'fault' :
+                case 'params' :
+                case 'param' :
+                    data[member.name().toString()] = rpc2json(member);
+                    break;
+                case 'array' :
+                    var tempArray = [];
+                    for each (value in member.data.value) {
+                        tempArray.push(rpc2json(value));
+                    }
+                    return tempArray;
+                    break;
+                default :
+                    return null;
+            }
+        }
+        return data;
+    } catch(e) {
+        throw new Rpc2jsonError(e);
+    }
+};
+
+/**
+ * Recursive function converts JSON type object to RPC method call like xml
+ * @returns {XML} E4X object
+ */
+var json2rpc = function json2rpc(json) {
+    try {
+        if (!json) return <params/>
+        switch (typeof json) {
+            case 'boolean':
+                return <boolean>{((json) ? '1' : '0')}</boolean>;
+            case 'number':
+                return (parseInt(json) == json) ? <int>{json}</int> : <double>{json}</double>;
+            case 'string':
+                return <string>{json}</string>;
+            case 'object':
+                if (json instanceof String)
+                    return <string>{json}</string>;
+                else if (json instanceof Date)
+                    return <dateTime.iso8601>{json.getFullYear() + json.getMonth() + json.getDate() + 'T' + json.getHours() + ':' + json.getMinutes() + ':' + json.getSeconds()}</dateTime.iso8601>;
+                else if (json instanceof Array) {
+                    if (json2rpc == arguments.callee.caller) {
+                        var tempArray = <array><data/></array>;
+                        for each(member in json)
+                            tempArray.data.appendChild(<value>{json2rpc(member)}</value>);
+                        return tempArray;
+                    } else {
+                        result = <params/>
+                        for each(member in json)
+                            result.appendChild(<param><value>{json2rpc(member)}</value></param>);
+                        return result;
+                    }
+                } else {
+                    var struct = <struct/>;
+                    for (key in json)
+                        struct.appendChild(
+                            <member>
+                                <name>{key}</name>
+                                <value>{json2rpc(json[key])}</value>
+                            </member>
+                        );
+                    return struct;
+                }
+            break;
+        }
+    } catch (e) {
+        throw new Json2rpcError(e);
+    }
+    return null;
+};
+
 var Logger = {
     log : function(message) {
         if (message instanceof Error || message.stack) {
@@ -39,7 +390,7 @@ var Locale = {
         wrongURL : 'Error occured \nMight be incorrect XML-RPC URL was specified',
         json2rpcError : 'Error occured during server request generation',
         rpc2jsonError : 'Error occured during parsing server response',
-        serverCallError : 'Error occured during server call, most likely wrong bugzilla url was specified (check session urls)',
+        serverCallError : 'Error occured during server call, most likely wrong bugzilla url was specified (check connection urls)',
         rpcFault : 'RPC Call returned fault'
     },
     
@@ -51,6 +402,13 @@ var Locale = {
     user : {
         title : 'User information : ',
         label : ''
+    },
+    
+    connection : {
+        add : 'Connection has been added',
+        remove : 'Connection has been removed',
+        missing : 'No connections found',
+        mandatory : 'In order to use bugzilla commands you need to add at least one connection'
     },
     
     bug : {
@@ -89,12 +447,37 @@ var Locale = {
     }
 };
 
+var Confs = {
+    splitter : '|',
+    names : {
+        connections : 'ubiquity.commands.bugzilla.connections',
+        url : 'ubiquity.commands.bugzilla.url.',
+        lastConnection : 'ubiquity.commands.bugzilla.lastConnection',
+        lastBug : 'ubiquity.commands.bugzilla.lastBug'
+    }
+};
+
 var Template = {
-    style : <style>
-        {'.fixed {text-decoration: line-through;}'}
-        {'a {text-decoration: underline;}'}
-    </style>,
-    loader : <span>Loading... <img id="loader" src="chrome://global/skin/icons/loading_16.png" alt=""/></span>,
+    icon : 'http://www.bugzilla.org/img/buggie.png',
+    style :
+        <style>
+            {'.fixed {text-decoration: line-through;}'}
+            {'a {text-decoration: underline;}'}
+        </style>,
+    loader :
+        <span>
+            {'Loading... '}
+            <img id="loader" src="chrome://global/skin/icons/loading_16.png" alt=""/>
+        </span>,
+    needConnection :
+        <div>
+            <h2 id="title">
+                {Locale.connection.missing}
+                <span class="important">
+                    {Locale.connection.mandatory}
+                </span>
+            </h2>
+        </div>,
     span : function(data) {
         if (data) {
             if (data instanceof Array) {
@@ -125,320 +508,47 @@ var Template = {
  */
 var MetaData = {
     icon : 'http://www.bugzilla.org/img/bugzilla_icon.png',
-    homepage : 'http://rfobic.blogspot.com/2008/10/ubiquity-command-for-bugzilla.html',
-    author : { name: "Irakli Gozalishvili", email: "Irakli.Gozalishvili@tomtom.com"}
+    homepage : 'http://rfobic.wordpress.com/',
+    author : { name: "Irakli Gozalishvili", email: "rfobic@gmail.com"}
 };
-
-var Session = function(nick, url, username, password) {
-    this.nick = nick;
-    
-    // creating new session
-    if (url && username && password) {
-        // remove login if exists
-        this.remove();
-        // creating instance of nsILoginInfo
-        var login = new LoginInfo(url, null, nick, username, password, '', '');
-        // adding / changeing Bugzilla xml-rpc url for session
-        Bugzilla._prefs.setValue(Bugzilla._prefNames.url + nick, url);
-        // adding session to bookmarks
-        Bugzilla._prefs.setValue(Bugzilla._prefNames.sessions, Bugzilla._prefs.getValue(Bugzilla._prefNames.sessions,'') + Bugzilla._prefNames.splitter + nick);
-        // storing user and password
-        LoginManager.addLogin(login);
-    }
-};
-
-Session.prototype = {
-    /**
-     * Session name
-     * @type {string}
-     */
-    nick : null,
-    
-    /**
-     * Url of the Bugzilla XML-RPC service for this session
-     * @type {String}
-     */
-    get url() {
-        return Bugzilla._prefs.getValue(Bugzilla._prefNames.url + this.nick, '');
-    },
-    
-    /**
-     * getter for a user and password
-     * @type {Object}
-     * { username : 'MyUeser', password : 'myPassword'}
-     */
-    get login() {
-        var logins = LoginManager.findLogins({}, this.url, null, this.nick);
-        return logins.length > 0 ? {username : logins[0].username, password : logins[0].password} : null;
-    },
-    
-    /**
-     * Removes current login from memory
-     */
-    remove : function() {
-        // removeing from stored sessions
-        Bugzilla._prefs.setValue(Bugzilla._prefNames.sessions, Bugzilla._prefs.getValue(Bugzilla._prefNames.sessions,'').replace(Bugzilla._prefNames.splitter + this.nick, ''));
-        // removeing login info from LoginManager
-        var logins = LoginManager.findLogins({}, this.url, null, this.nick);
-        for (var i = 0; i < logins.length; i++) {
-            LoginManager.removeLogin(logins[i]);
-        }
-    }
-};
-
-
 
 var Bugzilla = {
-    /**
-     * Last accessed session
-     * @type {Object}
-     * {
-     *      url : 'https://bugzilla.mozilla.org/xmlrpc.cgi',
-     *      user : 'myUser',
-     *      password : 'myPassword'
-     * }
-     */
-    _lastSession : null,
-    
-    get lastSession() {
-        if (!this._lastSession) {
-            var lastSessionName = this._prefs.getValue(this._prefNames.sessions, this._prefNames.splitter).split(this._prefNames.splitter)[1];
-            this._lastSession = (lastSessionName && lastSessionName != '') ? new Session(lastSessionName) : null;
-        }
-        return  this._lastSession;
-    },
-    
-    set lastSession(session) {
-        var nick = this._prefNames.splitter + session.nick;
-        var prefName = this._prefNames.sessions;
-        this._prefs.setValue(prefName, nick + this._prefs.getValue(prefName,'').replace(nick, ''));
-        this._lastSession = session;
-    },
-    
-    _prefs : Application.prefs,
-    
-    /**
-     * Map of preference names
-     */
-    _prefNames : {
-        splitter : '|',
-        sessions : 'ubiquity.commands.bugzilla.sessions',
-        url : 'ubiquity.commands.bugzilla.url.',
-        lastSession : 'ubiquity.commands.bugzilla.lastSession'
-    },
-    
-    /**
-     * Makes rpc calls to the JIRA XML-RPC Service and returns results as XML
-     * Example:
-     * rpc('http://jira.atlassian.com/rpc/xmlrpc','jira1.login',
-     *      <params>
-     *          <param>
-     *              <value>{user}</value>
-     *           </param>
-     *           <param>
-     *              <value>{password}</value>
-     *           </param>
-     *      </params>);
-     * 
-     * 
-     * @param url {String} XML-RPC Service url
-     * @param method {String} Name of the method to be called
-     * @param data {XML} Data to be passed to the Remote Procedure
-     * 
-     * @throws Error {Error} Throw exceprion if method responce contains fault
-     */
-    rpc : function(url, method, data, callbak) {
-        try {
-            var async = callbak ? true : false;
-            var request = {
-                url : url,
-                type : 'POST',
-                data :  <methodCall>
-                            <methodName>{method}</methodName>
-                            {this.json2rpc(data)}
-                        </methodCall>.toXMLString(),
-                async : async,
-                contentType : 'text/xml',
-                dataType : 'text'
-            };
-            
-            if (async) {
-                var self = this;
-                request.success = function requestSuccess(data, textStatus) {
-                    callbak(self.rpc2json(new XML(data.replace(/^<\?xml\s+version\s*=\s*(["'])[^\1]+\1[^?]*\?>/,""))));
-                };
-                request.error = function requestFailed(xhr, textStatus, errorThrown) {
-                    displayMessage('Have no clue if its going to be catched somewhere');
-                    throw new RpcFault(errorThrown);
-                };
-                return $.ajax(request);
-            } else {
-                var methodResponce = this.rpc2json(new XML($.ajax(request).responseText.replace(/^<\?xml\s+version\s*=\s*(["'])[^\1]+\1[^?]*\?>/,"")));
-                if (methodResponce.fault)
-                    throw new RpcFault(methodResponce);
-                else
-                    return methodResponce;
-            }
-        } catch (e if e instanceof Json2rpcError) {
-            displayMessage(Locale.errors.json2rpcError);
-            Logger.log(e.causedBy);
-            throw new IgnorableError(e);
-        } catch (e if e instanceof Rpc2jsonError) {
-            displayMessage(Locale.errors.rpc2jsonError);
-            Logger.log(e.causedBy);
-            throw new IgnorableError(e);
-        } catch (e if e instanceof RpcFault) {
-            displayMessage(Locale.errors.rpcFault);
-            throw e;
-        } catch (e) {
-            displayMessage(Locale.errors.serverCallError)
-            Logger.log(e);
-            throw new IgnorableError(e);
-        }
-    },
-    
-    /**
-     * Recursive function converts responce of the RPC
-     * call to the JSON Object
-     * @returns {Object} JSON type object
-     */
-    rpc2json : function(xml) {
-        try {
-            var self = arguments.callee;
-            var data = {};
-            for each (var member in xml.*) {
-                if (member.nodeKind() == 'text')
-                    return new String(member);
-                
-                switch (member.name().toString()) {
-                    case 'i4' :
-                    case 'int' :
-                    case 'double' :
-                        return new Number(member.text());
-                        break;
-                    case 'string' :
-                        return new String(member.text());
-                        break;
-                    case 'dateTime.iso8601' :
-                        var [ ,year, month, date, hours, minutes, seconds] = member.text().match(/^(\d{4})(\d{2})(\d{2})T(\d{2}):(\d{2}):(\d{2})/);
-                        var dateTime = new Date();
-                        dateTime.setFullYear(year);
-                        dateTime.setMonth(month);
-                        dateTime.setDate(date);
-                        dateTime.setHours(hours);
-                        dateTime.setMinutes(minutes);
-                        dateTime.setSeconds(seconds);
-                        return dateTime;
-                        break;
-                    case 'base64' :
-                        return member.text();
-                        break;
-                    case 'value' :
-                    case 'struct' :
-                    case 'methodResponse' :
-                        return self(member);
-                        break;
-                    case 'member' :
-                        data[member.name.text()] = self(member.value);
-                        break;
-                    case 'fault' :
-                    case 'params' :
-                    case 'param' :
-                        data[member.name().toString()] = self(member);
-                        break;
-                    case 'array' :
-                        var tempArray = [];
-                        for each (value in member.data.value) {
-                            tempArray.push(self(value));
-                        }
-                        return tempArray;
-                        break;
-                    default :
-                        return null;
-                }
-            }
-            return data;
-        } catch(e) {
-            throw new Rpc2jsonError(e);
-        }
-    },
-    
-    /**
-     * Recursive function converts JSON type object to RPC method call like xml
-     * @returns {XML} E4X object
-     */
-    json2rpc : function(json) {
-        try {
-            var self = arguments.callee;
-            if (!json) return <params/>
-            
-            switch (typeof json) {
-                case 'boolean':
-                    return <boolean>{((json) ? '1' : '0')}</boolean>;
-                case 'number':
-                    return (parseInt(json) == json) ? <int>{json}</int> : <double>{json}</double>;
-                case 'string':
-                    return <string>{json}</string>;
-                case 'object':
-                    if (json instanceof String)
-                        return <string>{json}</string>;
-                    else if (json instanceof Date)
-                        return <dateTime.iso8601>{json.getFullYear() + json.getMonth() + json.getDate() + 'T' + json.getHours() + ':' + json.getMinutes() + ':' + json.getSeconds()}</dateTime.iso8601>;
-                    else if (json instanceof Array) {
-                        if (self == self.caller) {
-                            var tempArray = <array><data/></array>;
-                            for each(member in json)
-                                tempArray.data.appendChild(<value>{self(member)}</value>);
-                            return tempArray;
-                        } else {
-                            result = <params/>
-                            for each(member in json)
-                                result.appendChild(<param><value>{self(member)}</value></param>);
-                            return result;
-                        }
-                    } else {
-                        var struct = <struct/>;
-                        for (key in json)
-                            struct.appendChild(
-                                <member>
-                                    <name>{key}</name>
-                                    <value>{self(json[key])}</value>
-                                </member>
-                            );
-                        return struct;
-                    }
-                break;
-            }
-        } catch (e) {
-            throw new Json2rpcError(e);
-        }
-    },
-    
-    
     getInfo : function() {
         try {
-            return this.rpc(Bugzilla.lastSession.url, 'Bugzilla.version').params.param.version;
+            return rpc(Bugzilla.utils.getXMLRPCLink(Connection.url), 'Bugzilla.version').params.param.version;
         } catch (e if e instanceof IgnorableError) {
             // ignoring as exception was already analized and shown in ui
         } catch (e if e instanceof RpcFault) {
                 if (e.causedBy.fault && e.causedBy.fault.faultString)
-                    displayMessage(e.causedBy.fault.faultString.toString());
+                    notify({
+                        title : Locale.errors.rpcFault,
+                        text : e.causedBy.fault.faultString.toString()
+                    });
         } catch (e) {
-            displayMessage(Locale.errors.unknown);
+            notify({
+                title : Locale.errors.unknown,
+                text : e.message
+            });
             Logger.log(e);
         }
+        return null;
     },
     
     getUsers : function(params) {
         try {
-            var users = this.rpc(Bugzilla.lastSession.url, 'User.get', params);
+            var users = rpc(Connection.url, 'User.get', params);
         } catch (e if e instanceof IgnorableError) {
             // ignoring as exception was already analized and shown in ui
         } catch (e if e instanceof RpcFault) {
-                if (e.causedBy.fault && e.causedBy.fault.faultString)
-                    displayMessage(e.causedBy.fault.faultString.toString());
+            notify({
+                title : Locale.errors.rpcFault,
+                text : e.causedBy.fault.faultString.toString()
+            });
         } catch (e) {
-            displayMessage(Locale.errors.unknown);
+            notify({
+                title : Locale.errors.unknown,
+                text : e.message
+            });
             Logger.log(e);
         }
     },
@@ -446,18 +556,18 @@ var Bugzilla = {
     getBugs : function(params, callback) {
         try {
             if (callback)
-                this.rpc(Bugzilla.lastSession.url, 'Bug.get_bugs', params, function(data) {
+                rpc(Bugzilla.utils.getXMLRPCLink(Connection.url), 'Bug.get_bugs', params, function(data) {
                     callback(data.params.param.bugs);
                 });
             else 
-                return this.rpc(Bugzilla.lastSession.url, 'Bug.get_bugs', params).params.param.bugs;
+                return rpc(Bugzilla.utils.getXMLRPCLink(Connection.url), 'Bug.get_bugs', params).params.param.bugs;
         } catch (e if e instanceof IgnorableError) {
             // ignoring as exception was already analized and shown in ui
-        } catch (e if e instanceof RpcFault) {
-                if (e.causedBy.fault && e.causedBy.fault.faultString)
-                    displayMessage(e.causedBy.fault.faultString.toString());
         } catch (e) {
-            displayMessage(Locale.errors.unknown);
+            notify({
+                title : Locale.errors.unknown,
+                text : e.message
+            });
             Logger.log(e);
         }
         return null;
@@ -470,55 +580,59 @@ Bugzilla.utils = {
     },
     
     getXMLRPCLink : function(url) {
-        return url + 'xmlrpc.cgi'
+        return url + 'xmlrpc.cgi';
+    },
+    
+    getLogin : function(id) {
+        return CmdUtils.retrieveLogins(id)[0];
     }
 };
 
-Bugzilla.nouns = {
-    session : {
-        _name : 'Session',
-        suggest : function(text, html) {
-            var sessions = Bugzilla._prefs.getValue(Bugzilla._prefNames.sessions, '').split(Bugzilla._prefNames.splitter);
-            sessions.shift();
-            var filter = new RegExp('[\s\S]*' + text + '[\s\S]*','i');
-            var matchedsuggestions = [];
-            var unmatchedSuggestions = [];
-            
-            for each (var session in sessions) {
-                var suggestions = filter.test(session) ? matchedsuggestions : unmatchedSuggestions;
-                suggestions.push({
-                    text : session,
-                    summary : session,
-                    html : session,
-                    data : new Session(session)
-                });
-                
+var Connection = CmdUtils.CreateAdjective({
+    _name : 'Connection',
+    cache : true,
+    dependencies : [
+        {
+            get reliable() {
+                return (Connection.history(1)[0].data);
             }
-            
-            return matchedsuggestions.length ? matchedsuggestions : unmatchedSuggestions;
-        },
-        
-        default : function() {
-            return this.suggest('');
-            
-            var sessions = Bugzilla._prefs.getValue(Bugzilla._prefNames.sessions, '').split(Bugzilla._prefNames.splitter);
-            sessions.push ({
-                text : Bugzilla.lastSession.nick,
-                summary : Bugzilla.lastSession.nick,
-                html : Bugzilla.lastSession.nick,
-                data : Bugzilla.lastSession 
-            });
-            return sessions;
         }
+    ],
+    suggest : function(text, html) {
+        var connections = this.history();
+        var filter = new RegExp('[\s\S]*' + text + '[\s\S]*','i');
+        var matchedsuggestions = [];
+        var unmatchedSuggestions = [];
+        connections.forEach(function(connection){
+            var suggestions = filter.test(connection.text) ? matchedsuggestions : unmatchedSuggestions;
+            suggestions.push(connection);
+        });
+        return matchedsuggestions.length ? matchedsuggestions : unmatchedSuggestions;
     },
-    
-    bugByID : {
-        _name : 'Bug',
-        suggest : function(text, html, makeSuggestion) {
-            var suggestions = [];
-            text = text.replace('bugzilla-get ','');
-            var params = [{ids : text.split(/\s+/), permissive : true}];
-            try {
+    default : function() {
+        if (this.reliable) {
+            Logger.log(this.history(1).toSource())
+            return this.history(1);
+        }
+        return [];
+    },
+    get url() {
+        if (this.reliable)
+            return this.history(1)[0].data.url;
+        return null;
+    }
+});
+
+var BugById = CmdUtils.CreateAdjective({
+    _name : 'Bug',
+    dependencies : [Connection],
+    delay : 200,
+    suggest : function(text, html, makeSuggestion) {
+        var suggestions = [];
+        text = text.replace('bugzilla-get ','');
+        var params = [{ids : text.split(/\s+/), permissive : true}];
+        try {
+            if (makeSuggestion) {
                 Bugzilla.getBugs(params, function asyncSuggest(bugs) {
                     for each (var bug in bugs) {
                         var bugId = bug.id.toString();
@@ -530,48 +644,39 @@ Bugzilla.nouns = {
                         });
                     }
                 });
-            } catch (e) {
-                displayMessage(Locale.errors.unknown);
-                Logger.log(e.toSource());
+            } else {
+                Bugzilla.getBugs(params).forEach(function(){
+                    suggestions.push({
+                        text : bugId,
+                        summary : bugId,
+                        html : bugId,
+                        data : bug
+                    })
+                })
             }
-            
-            // Workaround for async suggestions bug
-            // https://bugzilla.mozilla.org/show_bug.cgi?id=484615
-            var [workaround] = Bugzilla.getBugs([{ids : ['484615'], permissive : true}]);
-            if (workaround.internals.resolution.toString().toLowerCase() != 'fixed')
-                suggestions.push({
-                    text : workaround.id,
-                    summary : workaround.id,
-                    html : workaround.id,
-                    data : workaround
-                });
-            
-            return suggestions;
-        },
-        default : function(text, html, makeSuggestion) {
-            return {
-                text : 'test',
-                summary : 'test',
-                html : 'test'
-            }
+        } catch (e) {
+            notify({
+                title : Locale.errors.unknown,
+                text : e.message
+            });
         }
+        return suggestions;
+    },
+    default : function(text, html) {
+        return this.history(1);
     }
-};
-
+});
 
 CmdUtils.CreateCommand({
-    name : 'bugzilla-session-add',
-    
+    name : 'bugzilla-connection-add',
     icon : MetaData.icon,
-    
-    description : 'Creates and stores new session',
-    
+    description : 'Creates and stores new connection',
     author : MetaData.author,
-    
     homepage : MetaData.homepage,
-    
-    help : 'type bugzilla-add-session name url user password',
-    
+    help : 'type bugzilla-add-connection name url user password',
+    takes : {
+        'url' : noun_arb_text
+    },
     modifiers : {
         'name' : noun_arb_text,
         'url' : noun_arb_text,
@@ -580,17 +685,17 @@ CmdUtils.CreateCommand({
     },
     
     preview : function(pblock, takes, modifiers) {
-        [name, url, username, password] = [modifiers.name.text, modifiers.url.text, modifiers.user.text, modifiers.password.text];
+        [name, url, username, password] = [modifiers.name.text, modifiers.url.text || takes.text, modifiers.user.text, modifiers.password.text];
         var error = 'color: red';
         var input = 'background: none; border: none; color: white; font-size: 12px;';
         var link = 'text-decoration: underline;'
         pblock.innerHTML =
             <div>
-                <b>{'Creates and saves new session Bugzilla:'}</b>
+                <b>{'Creates and saves new connection Bugzilla:'}</b>
                 <br/>
                 <br/>
                 <div>
-                    <b>{ 'Session name : '}</b>
+                    <b>{ 'Connection name : '}</b>
                     { name ? <b>{name}</b> : <b style={error}>{'Needs a name'}</b> }
                 </div>
                 <div>
@@ -609,44 +714,66 @@ CmdUtils.CreateCommand({
     },
     
     execute : function(takes, modifiers) {
-        [name, url, username, password] = [modifiers.name.text, modifiers.url.text || takes.text, modifiers.user.text, modifiers.password.text];
         try {
-            if (name && url && username && password)
-                var session = new Session(name, url, username, password);
-                if (!Bugzilla.lastSession) {
-                    Bugzilla.lastSession = session;
+            var [name, url, username, password] = [modifiers.name.text, modifiers.url.text || takes.text, modifiers.user.text, modifiers.password.text];
+            url = (url.substr(-1) == '/') ? url : url + '/';
+            /*
+            var logins = LoginManager.findLogins({}, url, null, name);
+            for (var i = 0; i < logins.length; i++) {
+                LoginManager.removeLogin(logins[i]);
+            }
+            LoginManager.addLogin(new LoginInfo(url, null, name, username, password, '', ''));
+            */
+            CmdUtils.savePassword({
+                name : url + '#' + name,
+                username : username,
+                password : password
+            }); 
+            Connection.addHistory({
+                text : name,
+                summary : name,
+                html : name,
+                data : {
+                    name : name,
+                    url : url,
+                    id : url + '#' + name
                 }
+            });
+            notify({
+                title : Locale.connection.add,
+                text : name + '\n' + url
+            });
         } catch(e) {
-            displayMessage(e.toSource());
+            notify({
+                title : Locale.errors.unknown,
+                text : e.message
+            });
+            Logger.log(e.toSource);
         }
     }
 });
 
 CmdUtils.CreateCommand({
-    name : 'bugzilla-session-remove',
-    
+    name : 'bugzilla-connection-remove',
     icon : MetaData.icon,
-    
-    description : 'Removes selected session from memory',
-    
+    description : 'Removes selected connection from memory',
     author : MetaData.author,
-    
     homepage : MetaData.homepage,
-    
-    help : 'type bugzilla-session-remove name',
-    
+    help : 'type bugzilla-connection-remove name',
     takes : {
-        'session' : Bugzilla.nouns.session
+        'connection' : Connection
     },
-    
     preview : function(pblock, takes) {
-        
+        if (!takes.data) {
+            pblock.innerHTML = Template.needConnection;
+            return null;
+        }
         var error = 'color: red';
         var input = 'background: none; border: none; color: white; font-size: 12px;';
         var link = 'text-decoration: underline;'
         pblock.innerHTML =
             <div>
-                <b>{'Removes Bugzilla session :'}</b>
+                <b>{'Removes Bugzilla connection :'}</b>
                 <br/>
                 <br/>
                 <div>
@@ -654,40 +781,39 @@ CmdUtils.CreateCommand({
                 </div>
             </div>.toXMLString();
     },
-    
     execute : function(takes) {
         try {
-            (new Session(takes.text)).remove();
+            Connection.removeHistory(takes);
         } catch(e) {
-            displayMessage(e.toSource());
+            notify({
+                title : Locale.errors.unknown,
+                text : e.message
+            });
+            Logger.log(e.toSource());
         }
     }
 });
 
 CmdUtils.CreateCommand({
     name : 'bugzilla-info-version',
-    
     icon : MetaData.icon,
-    
     description : 'Gets bugzilla version',
-    
     author : MetaData.author,
-    
     homepage : MetaData.homepage,
-    
     help : 'type bugzilla-info-version',
-    
     modifiers : {
-        'session' : Bugzilla.nouns.session
+        'connection' : Connection
     },
-    
     previewDelay : 200,
-    
     preview : function(pblock, takes, modifiers) {
-        Bugzilla.lastSession = modifiers.session.data;
+        if (!modifiers.connection.data) {
+            pblock.innerHTML = Template.needConnection;
+            return null;
+        }
+        Connection.addHistory(modifiers.connection);
         pblock.innerHTML =
             <div>
-                <b>{Locale.info_version.title + modifiers.session.text}</b>
+                <b>{Locale.info_version.title + modifiers.connection.text}</b>
                 <br/>
                 <br/>
                 <div id="result">
@@ -701,55 +827,9 @@ CmdUtils.CreateCommand({
                     {Bugzilla.getInfo()}
                 </div>.toXMLString());
     },
-    
-    execute : function(takes, modifiers) {}
-});
-
-
-CmdUtils.CreateCommand({
-    name : 'bugzilla-user',
-    icon : MetaData.icon,
-    description : 'Gets information about user accounts in Bugzilla',
-    author : MetaData.author,
-    homepage : MetaData.homepage,
-    help : '',
-    modifiers : {
-        'id' : noun_arb_text,
-        //'name' : noun_arb_text,
-        //'match' : noun_arb_text,
-        'session' : Bugzilla.nouns.session
-    },
-    
-    previewDelay : 200,
-    
-    preview : function(pblock, takes, modifiers) {
-        Bugzilla.lastSession = modifiers.session.data;
-        pblock.innerHTML =
-            <div>
-                <b>{Locale.user.title + modifiers.id.text}</b>
-                <br/>
-                <br/>
-                <div>
-                    <div id="result">
-                        {Template.loader}
-                    </div>
-                </div>
-            </div>.toXMLString();
-            
-            $('#result', pblock).html(
-                 <div>
-                    <b>{Locale.user.label}</b>
-                    {Bugzilla.getUsers({
-                        params : {
-                            param : {
-                                ids : modifiers.id.text.split('|')
-                            }
-                        }
-                    })}
-                </div>.toXMLString());
-    },
-    
-    execute : function(takes, modifiers) {}
+    execute : function(takes, modifiers) {
+        Utils.openUrlInBrowser(modifiers.connection.data.url);
+    }
 });
 
 CmdUtils.CreateCommand({
@@ -758,33 +838,32 @@ CmdUtils.CreateCommand({
     description : Locale.bug.get.description,
     author : MetaData.author,
     homepage : MetaData.homepage,
-    //help : 'type bugzilla-info-version',
+    help : 'type / select bugzilla id\'s seperated by whitespaces',
     takes : {
-        'id' : Bugzilla.nouns.bugByID
+        'id' : BugById
     },
     modifiers : {
-        'session' : Bugzilla.nouns.session
+        'connection' : Connection
     },
     previewDelay : 300,
-    
     preview : function(pblock, takes, modifiers) {
-        Bugzilla.lastSession = modifiers.session.data;
+        if (!modifiers.connection.data) {
+            pblock.innerHTML = Template.needConnection;
+            return null;
+        }
+        Connection.addHistory(modifiers.connection);
         var bug = takes.data;
-        
+        if (bug)
+            BugById.addHistory(bug);
         pblock.innerHTML =
             <div>
                 <h2 id="title">
                     {Locale.bug.get.title}
-                    <span id="bug">{bug.id}</span>
+                    <span class={bug.internals.resolution.toString().toLowerCase()}>
+                        {Template.link(bug.id, Bugzilla.utils.getBugLink(bug.id, modifiers.connection.data.url))}
+                    </span>
                 </h2>
                 <div id="result">
-                    {Template.loader}
-                </div>
-            </div>.toXMLString();
-            
-            Logger.log(bug.internals.qa_contact.toSource())
-            $('#result', pblock).html(
-                 <div>
                     {Template.style}
                     {Template.line(bug.alias, Locale.bug.get.alias)}
                     {Template.line(bug.summary)}
@@ -806,11 +885,10 @@ CmdUtils.CreateCommand({
                     {Template.line(bug.last_change_time.toLocaleString(), Locale.bug.get.last_change_time)}
                     
                     {Template.line(Template.link(bug.internals.bug_file_loc), Locale.bug.get.bug_file_loc)}
-                </div>.toXMLString());
-            $('#bug', pblock).addClass(bug.internals.resolution.toString().toLowerCase());
+                </div>
+            </div>.toXMLString();
     },
-    
     execute : function(takes, modifiers) {
-        Utils.openUrlInBrowser(Bugzilla.utils.getBugLink(takes.text, session.data.url));
+        Utils.openUrlInBrowser(Bugzilla.utils.getBugLink(takes.text, modifiers.connection.data.url));
     }
-});
+});
