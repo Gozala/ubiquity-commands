@@ -11,108 +11,94 @@ var notify = function(message) {
     });
 };
 
-var Adjective = function Adjective (noun, dependencies) {
-    this._noun = noun;
-    this._depenencies = dependencies || [];
-    this.delay = this._noun.delay || 0;
-    this.memory = this._noun.memory || 10;
-    if (noun.default) this.default = this._default;
-};
-Adjective.prototype = {
-    /**
-     * Noun which will be extended to an Adjective
-     * 
-     */
-    _noun : null,
-    /**
-     * Local dependencies
-     * @type Array
-     */
-    _depenencies : null,
+/**
+ * Mutates noun to the adjective
+ * Adds dependency resolver
+ * Adds suggestion history cache
+ * Adds delay support for suggestions
+ */
+CmdUtils.CreateAdjective = function CreateAdjective (noun) {
     /**
      * Checks all the dependencies and returns true if all of them are satisfied
      * @returns {boolean}
      */
-    get reliable() {
-        for each (var dependency in this._noun._depenedenies)
-            if (!dependency.reliable) return false
-        for each (var dependency in this._depenencies)
+    noun.__defineGetter__('reliable', function relible(){
+        for each (var dependency in this.dependencies)
             if (!dependency.reliable) return false
         return true;
-    },
-    /**
-     * Name
-     */
-    get _name() {
-        return this._noun._name;
-    },
+    }),
     /**
      * Delay which will happen before parser will satrt parseing input
      * If input will change before suggestions will be canceled
      * @type Integer number of miliseconds
      */
-    delay : 0,
+    noun.delay = noun.delay || 0;
+    /**
+     * Length length
+     */
+    noun.memory = noun.memory || 10;
     /**
      * This property is used to store timer id for the delayed suggestions
      * @type {string}
      */
-    _timerId : null,
+    noun._timerId = null;
+    /**
+     * Saving original suggest in order to be able to use it after mutation
+     */
+    noun._suggest = noun.suggest;
     /**
      * returns suggestions
      */
-    suggest : function() {
+    noun.suggest = function suggest() {
         if (this.reliable) {
             Utils.clearTimeout(this._timerId);
+            var args = arguments;
             if (this.delay == 0)
-                return this._noun.suggest.apply(arguments.callee.caller, arguments);
-            
-            var original = {
-                suggest : this._noun.suggest,
-                argumnets : arguments,
-                caller : arguments.callee.caller
-            };
+                return noun._suggest.apply(this, args);
+            // If mutate
             this._timerId = Utils.setTimeout(function(){
-                original.suggest.apply(original.caller, original.argumnets);
-            },this.delay);
+                noun._suggest.apply(noun, args);
+            }, this.delay);
             
             // Workaround for async suggestions bug
             // https://bugzilla.mozilla.org/show_bug.cgi?id=484615
-            return {
+            return [{
                 text : 'BUG 484615',
                 summary : 'Workaround for bug 484615',
-                html : '<a href="https://bugzilla.mozilla.org/show_bug.cgi?id=484615">BUG 484615</a>'
-            };
-            return [];
+                html : '<a href="https://bugzilla.mozilla.org/show_bug.cgi?id=484615">BUG 484615</a>',
+                data : {summary:(new String("Ubiquity Asynchronous Noun Suggestions are not working")), internals:{cf_blocking_fennec:(new String("---")), priority:(new String("--")), bug_id:(new Number(484615)), _multi_selects:[], bug_file_loc:(new String("http://groups.google.com/group/ubiquity-firefox/browse_thread/thread/d556c431e40ff9aa")), cclist_accessible:(new Number(1)), rep_platform:(new String("x86")), product_id:(new Number(40)), creation_ts:(new String("2009.03.21 17:46")), assigned_to:(new Number(298253)), short_desc:(new String("Ubiquity Asynchronous Noun Suggestions are not working")), qa_contact:(new Number(247525)), everconfirmed:(new Number(0)), status_whiteboard:(new String("")), bug_severity:(new String("major")), bug_status:(new String("UNCONFIRMED")), delta_ts:(new String("2009-03-21 17:46:06")), version:(new String("unspecified")), reporter_id:(new Number(295373)), component_id:(new Number(757)), resolution:(new String("")), reporter_accessible:(new Number(1)), target_milestone:(new String("--")), alias:{}, op_sys:(new String("Mac OS X"))}, id:(new Number(484615)), last_change_time:(new Date(1240328766122)), creation_time:(new Date(1240328760122)), alias:(new String(""))}
+            }];
         }
         return [];
-    },
-    
+    };
+    /**
+     * Saving original default in order to be able to use it after mutation
+     */
+    noun._default = noun.default;
     /**
      * Proxy function for noun default that is enabled only in case if noun has default
+     * Used to prevent any actions if object is not reliable 
      * @returns {Array}
      */
-    _default : function() {
-        if (this.reliable)
-            return this._noun.default.apply(arguments.callee.caller, argument);
+    noun.default = !noun.default ? noun.default : function() {
+        if (this.reliable) {
+            return this._default.apply(this, arguments);
+        }
         else
             return [];
-    },
-    /**
-     * Length length
-     */
-    memory : 10,
+    };
     /**
      * If true suggestion data will be cached.
      */
-    cache : false,
+    noun.cache = noun.cache || false;
     /**
      * History of suggestion
      */
-    history : function(limit, callback, self) {
+    noun.history = function history(limit, callback, self) {
         self = self || arguments.callee.caller;
         var suggestions = [];
         try {
-            suggestions = Utils.decodeJson(Application.prefs.getValue('ubiquity.adjectives.' + this._name + '.hostory', '[]')).slice(0, limit);
+            suggestions = Utils.decodeJson(Application.prefs.getValue('ubiquity.adjectives.' + this._name + '.history', '[]')).slice(0, limit);
         } catch(e) {}
         
         if (this.cache) {
@@ -129,24 +115,40 @@ Adjective.prototype = {
                 }, this);
             else
                 return suggestions.map(function(suggestion) {
-                    return this.suggest(suggestion.text, suggestion.html);
+                    return this.suggest(suggestion.text, suggestion.html)[0];
                 }, this);
         }
         return suggestions;
-    },
+    };
     /**
      * Adds suggestion to the history
      */
-    addHistroy : function(suggestion) {
-        var suggestions = [];
-        try {
-            suggestions = Utils.decodeJson(Application.prefs.getValue('ubiquity.adjectives.' + this._name + '.hostory', '[]')).slice(0, this.memory - 1);
-        } catch(e) {}
-        suggestions.unshift(suggestion);
-        try {
-            Application.prefs.setValue('ubiquity.adjectives.' + this._name + '.hostory', Utils.ecodeJson(suggestions));
-        } catch (e) {}
-    }
+    noun.addHistory = function addHistory(suggestion) {
+        if (suggestion && suggestion.text) {
+            try {
+                var suggestions = Utils.decodeJson(Application.prefs.getValue('ubiquity.adjectives.' + this._name + '.history', '[]')).filter(function(element){
+                    return (element.text != suggestion.text);
+                }).slice(0, this.memory - 1);
+                suggestions.unshift(suggestion);
+                Application.prefs.setValue('ubiquity.adjectives.' + this._name + '.history', Utils.encodeJson(suggestions));
+            } catch (e) {}
+        }
+    };
+    /**
+     * Removes suggestion from history
+     */
+    noun.removeHistory = function removeHistory(suggestion) {
+        if (suggestion) {
+            try {
+                var suggestions = Utils.decodeJson(Application.prefs.getValue('ubiquity.adjectives.' + this._name + '.history', '[]')).filter(function(element){
+                    return (element.text != suggestion.text);
+                });
+                Application.prefs.setValue('ubiquity.adjectives.' + this._name + '.history', Utils.encodeJson(suggestions));
+            } catch(e) {}
+        }
+    };
+    
+    return noun;
 };
 
 var Rpc2jsonError = function(error) {
@@ -445,7 +447,7 @@ var Locale = {
     }
 };
 
-Confs = {
+var Confs = {
     splitter : '|',
     names : {
         connections : 'ubiquity.commands.bugzilla.connections',
@@ -510,68 +512,10 @@ var MetaData = {
     author : { name: "Irakli Gozalishvili", email: "rfobic@gmail.com"}
 };
 
-var Connection = function(nick, url, username, password) {
-    this.nick = nick;
-    
-    // creating new connection
-    if (url && username && password) {
-        url = (url.substr(-1) == '/') ? url : url + '/';
-        // remove login if exists
-        this.remove();
-        // creating instance of nsILoginInfo
-        var login = new LoginInfo(url, null, nick, username, password, '', '');
-        // adding / changeing Bugzilla xml-rpc url for connection
-        Prefs.setValue(Confs.names.url + nick, url);
-        // adding connection to bookmarks
-        Prefs.setValue(Confs.names.connections, Prefs.getValue(Confs.names.connections,'') + Confs.splitter + nick);
-        // storing user and password
-        LoginManager.addLogin(login);
-    }
-};
-
-Connection.prototype = {
-    /**
-     * Connection name
-     * @type {string}
-     */
-    nick : null,
-    
-    /**
-     * Url of the Bugzilla XML-RPC service for this connection
-     * @type {String}
-     */
-    get url() {
-        return Prefs.getValue(Confs.names.url + this.nick, '');
-    },
-    
-    /**
-     * getter for a user and password
-     * @type {Object}
-     * { username : 'MyUeser', password : 'myPassword'}
-     */
-    get login() {
-        var logins = LoginManager.findLogins({}, this.url, null, this.nick);
-        return logins.length > 0 ? {username : logins[0].username, password : logins[0].password} : null;
-    },
-    
-    /**
-     * Removes current login from memory
-     */
-    remove : function() {
-        // removeing from stored connections
-        Prefs.setValue(Confs.names.connections, Prefs.getValue(Confs.names.connections,'').replace(Confs.splitter + this.nick, ''));
-        // removeing login info from LoginManager
-        var logins = LoginManager.findLogins({}, this.url, null, this.nick);
-        for (var i = 0; i < logins.length; i++) {
-            LoginManager.removeLogin(logins[i]);
-        }
-    }
-};
-
 var Bugzilla = {
     getInfo : function() {
         try {
-            return rpc(Bugzilla.nouns.connection.last.url, 'Bugzilla.version').params.param.version;
+            return rpc(Bugzilla.utils.getXMLRPCLink(Connection.url), 'Bugzilla.version').params.param.version;
         } catch (e if e instanceof IgnorableError) {
             // ignoring as exception was already analized and shown in ui
         } catch (e if e instanceof RpcFault) {
@@ -592,7 +536,7 @@ var Bugzilla = {
     
     getUsers : function(params) {
         try {
-            var users = rpc(Bugzilla.nouns.connection.last.url, 'User.get', params);
+            var users = rpc(Connection.url, 'User.get', params);
         } catch (e if e instanceof IgnorableError) {
             // ignoring as exception was already analized and shown in ui
         } catch (e if e instanceof RpcFault) {
@@ -612,11 +556,11 @@ var Bugzilla = {
     getBugs : function(params, callback) {
         try {
             if (callback)
-                rpc(Bugzilla.utils.getXMLRPCLink(Bugzilla.nouns.connection.last.url), 'Bug.get_bugs', params, function(data) {
+                rpc(Bugzilla.utils.getXMLRPCLink(Connection.url), 'Bug.get_bugs', params, function(data) {
                     callback(data.params.param.bugs);
                 });
             else 
-                return rpc(Bugzilla.utils.getXMLRPCLink(Bugzilla.nouns.connection.last.url), 'Bug.get_bugs', params).params.param.bugs;
+                return rpc(Bugzilla.utils.getXMLRPCLink(Connection.url), 'Bug.get_bugs', params).params.param.bugs;
         } catch (e if e instanceof IgnorableError) {
             // ignoring as exception was already analized and shown in ui
         } catch (e) {
@@ -637,87 +581,58 @@ Bugzilla.utils = {
     
     getXMLRPCLink : function(url) {
         return url + 'xmlrpc.cgi';
+    },
+    
+    getLogin : function(id) {
+        return CmdUtils.retrieveLogins(id)[0];
     }
 };
 
-Bugzilla.nouns = {
-    connection : {
-        _name : 'Connection',
-        suggest : function(text, html) {
-            var connections = Prefs.getValue(Confs.names.connections, '').split(Confs.splitter);
-            connections.shift();
-            var filter = new RegExp('[\s\S]*' + text + '[\s\S]*','i');
-            var matchedsuggestions = [];
-            var unmatchedSuggestions = [];
-            
-            for each (var connection in connections) {
-                var suggestions = filter.test(connection) ? matchedsuggestions : unmatchedSuggestions;
-                suggestions.push({
-                    text : connection,
-                    summary : connection,
-                    html : connection,
-                    data : new Connection(connection)
-                });
-                
+var Connection = CmdUtils.CreateAdjective({
+    _name : 'Connection',
+    cache : true,
+    dependencies : [
+        {
+            get reliable() {
+                return (Connection.history(1)[0].data);
             }
-            
-            return matchedsuggestions.length ? matchedsuggestions : unmatchedSuggestions;
-        },
-        
-        default : function() {
-            if (this.last)
-                return {
-                    text : this.last.nick,
-                    summary : this.last.nick,
-                    html : this.last.nick,
-                    data : this.last
-                };
-            return [];
-        },
-        
-        /**
-         * Last accessed connection
-         * @type {Object}
-         * {
-         *      url : 'https://bugzilla.mozilla.org/xmlrpc.cgi',
-         *      user : 'myUser',
-         *      password : 'myPassword'
-         * }
-         */
-        _last : null,
-        
-        get last() {
-            if (!this._last) {
-                var [,nick] = Prefs.getValue(Confs.names.connections, Confs.splitter).split(Confs.splitter);
-                this._last = (nick && nick != '') ? new Connection(nick) : null;
-            }
-            return  this._last;
-        },
-        
-        set last(connection) {
-            var nick = Confs.splitter + connection.nick;
-            var key = Confs.names.connections;
-            Prefs.setValue(key, nick + Prefs.getValue(key,'').replace(nick, ''));
-            this._last = connection;
         }
+    ],
+    suggest : function(text, html) {
+        var connections = this.history();
+        var filter = new RegExp('[\s\S]*' + text + '[\s\S]*','i');
+        var matchedsuggestions = [];
+        var unmatchedSuggestions = [];
+        connections.forEach(function(connection){
+            var suggestions = filter.test(connection.text) ? matchedsuggestions : unmatchedSuggestions;
+            suggestions.push(connection);
+        });
+        return matchedsuggestions.length ? matchedsuggestions : unmatchedSuggestions;
     },
-    
-    bugByID : {
-        _name : 'Bug',
-        get depends() {
-            return [Bugzilla.nouns.connection.last];
-        },
-        get reliable() {
-            for each (var dependency in this.depends)
-                if (!dependency) return false
-            return true
-        },
-        suggest : function(text, html, makeSuggestion) {
-            var suggestions = [];
-            if (Bugzilla.nouns.connection.last) {
-            text = text.replace('bugzilla-get ','');
-            var params = [{ids : text.split(/\s+/), permissive : true}];
-            try {
+    default : function() {
+        if (this.reliable) {
+            Logger.log(this.history(1).toSource())
+            return this.history(1);
+        }
+        return [];
+    },
+    get url() {
+        if (this.reliable)
+            return this.history(1)[0].data.url;
+        return null;
+    }
+});
+
+var BugById = CmdUtils.CreateAdjective({
+    _name : 'Bug',
+    dependencies : [Connection],
+    delay : 200,
+    suggest : function(text, html, makeSuggestion) {
+        var suggestions = [];
+        text = text.replace('bugzilla-get ','');
+        var params = [{ids : text.split(/\s+/), permissive : true}];
+        try {
+            if (makeSuggestion) {
                 Bugzilla.getBugs(params, function asyncSuggest(bugs) {
                     for each (var bug in bugs) {
                         var bugId = bug.id.toString();
@@ -729,62 +644,28 @@ Bugzilla.nouns = {
                         });
                     }
                 });
-            } catch (e) {
-                notify({
-                    title : Locale.errors.unknown,
-                    text : e.message
-                });
-                Logger.log(e.toSource());
+            } else {
+                Bugzilla.getBugs(params).forEach(function(){
+                    suggestions.push({
+                        text : bugId,
+                        summary : bugId,
+                        html : bugId,
+                        data : bug
+                    })
+                })
             }
-            
-            // Workaround for async suggestions bug
-            // https://bugzilla.mozilla.org/show_bug.cgi?id=484615
-            try {
-                var [workaround] = Bugzilla.getBugs([{ids : ['484615'], permissive : true}]);
-            } catch (e) {
-                var workaround = {summary:(new String("Ubiquity Asynchronous Noun Suggestions are not working")), internals:{cf_blocking_fennec:(new String("---")), priority:(new String("--")), bug_id:(new Number(484615)), _multi_selects:[], bug_file_loc:(new String("http://groups.google.com/group/ubiquity-firefox/browse_thread/thread/d556c431e40ff9aa")), cclist_accessible:(new Number(1)), rep_platform:(new String("x86")), product_id:(new Number(40)), creation_ts:(new String("2009.03.21 17:46")), assigned_to:(new Number(298253)), short_desc:(new String("Ubiquity Asynchronous Noun Suggestions are not working")), qa_contact:(new Number(247525)), everconfirmed:(new Number(0)), status_whiteboard:(new String("")), bug_severity:(new String("major")), bug_status:(new String("UNCONFIRMED")), delta_ts:(new String("2009-03-21 17:46:06")), version:(new String("unspecified")), reporter_id:(new Number(295373)), component_id:(new Number(757)), resolution:(new String("")), reporter_accessible:(new Number(1)), target_milestone:(new String("--")), alias:{}, op_sys:(new String("Mac OS X"))}, id:(new Number(484615)), last_change_time:(new Date(1240328766122)), creation_time:(new Date(1240328760122)), alias:(new String(""))}
-            }
-            if (workaround.internals.resolution.toString().toLowerCase() != 'fixed')
-                suggestions.push({
-                    text : workaround.id,
-                    summary : workaround.id,
-                    html : workaround.id,
-                    data : workaround
-                });
-            //
-            }
-            return suggestions;
-        },
-        default : function(text, html) {
-            if (this.last)
-                return {
-                    text : this.last.id,
-                    summary : this.last.id,
-                    html : this.last.id,
-                    data : this.last
-                };
-            return [];
-        },
-        /**
-         * Last retrived bug
-         */
-        _last : null,
-        get last() {
-            if (!this._last) {
-                try {
-                    var [bug] = Bugzilla.nouns.connection.last ? Bugzilla.getBugs([{ids : [Prefs.getValue(Confs.names.lastBug, '')], permissive : true}]) : null; 
-                    this._last = (bug) ? bug : null;
-                } catch (e) {}
-                return null;
-            }
-            return this._last;
-        },
-        set last(bug) {
-            Prefs.setValue(Confs.names.lastBug, bug.id);
-            this._last = bug;
+        } catch (e) {
+            notify({
+                title : Locale.errors.unknown,
+                text : e.message
+            });
         }
+        return suggestions;
+    },
+    default : function(text, html) {
+        return this.history(1);
     }
-};
+});
 
 CmdUtils.CreateCommand({
     name : 'bugzilla-connection-add',
@@ -833,13 +714,35 @@ CmdUtils.CreateCommand({
     },
     
     execute : function(takes, modifiers) {
-        [name, url, username, password] = [modifiers.name.text, modifiers.url.text || takes.text, modifiers.user.text, modifiers.password.text];
         try {
-            if (name && url && username && password)
-                var connection = new Connection(name, url, username, password);
-                if (!Bugzilla.nouns.connection.last) {
-                    Bugzilla.nouns.connection.last = connection;
+            var [name, url, username, password] = [modifiers.name.text, modifiers.url.text || takes.text, modifiers.user.text, modifiers.password.text];
+            url = (url.substr(-1) == '/') ? url : url + '/';
+            /*
+            var logins = LoginManager.findLogins({}, url, null, name);
+            for (var i = 0; i < logins.length; i++) {
+                LoginManager.removeLogin(logins[i]);
+            }
+            LoginManager.addLogin(new LoginInfo(url, null, name, username, password, '', ''));
+            */
+            CmdUtils.savePassword({
+                name : url + '#' + name,
+                username : username,
+                password : password
+            }); 
+            Connection.addHistory({
+                text : name,
+                summary : name,
+                html : name,
+                data : {
+                    name : name,
+                    url : url,
+                    id : url + '#' + name
                 }
+            });
+            notify({
+                title : Locale.connection.add,
+                text : name + '\n' + url
+            });
         } catch(e) {
             notify({
                 title : Locale.errors.unknown,
@@ -858,10 +761,13 @@ CmdUtils.CreateCommand({
     homepage : MetaData.homepage,
     help : 'type bugzilla-connection-remove name',
     takes : {
-        'connection' : Bugzilla.nouns.connection,
+        'connection' : Connection
     },
     preview : function(pblock, takes) {
-        
+        if (!takes.data) {
+            pblock.innerHTML = Template.needConnection;
+            return null;
+        }
         var error = 'color: red';
         var input = 'background: none; border: none; color: white; font-size: 12px;';
         var link = 'text-decoration: underline;'
@@ -877,8 +783,7 @@ CmdUtils.CreateCommand({
     },
     execute : function(takes) {
         try {
-            (new Connection(takes.text)).remove();
-            Bugzilla.nouns.connection.last = null;
+            Connection.removeHistory(takes);
         } catch(e) {
             notify({
                 title : Locale.errors.unknown,
@@ -897,13 +802,15 @@ CmdUtils.CreateCommand({
     homepage : MetaData.homepage,
     help : 'type bugzilla-info-version',
     modifiers : {
-        'connection' : Bugzilla.nouns.connection
+        'connection' : Connection
     },
     previewDelay : 200,
     preview : function(pblock, takes, modifiers) {
-        if (!Bugzilla.nouns.connection.last)
-            return;
-        Bugzilla.nouns.connection.last = modifiers.connection.data;
+        if (!modifiers.connection.data) {
+            pblock.innerHTML = Template.needConnection;
+            return null;
+        }
+        Connection.addHistory(modifiers.connection);
         pblock.innerHTML =
             <div>
                 <b>{Locale.info_version.title + modifiers.connection.text}</b>
@@ -925,50 +832,6 @@ CmdUtils.CreateCommand({
     }
 });
 
-/* Can't get how this API works 
-CmdUtils.CreateCommand({
-    name : 'bugzilla-user',
-    icon : MetaData.icon,
-    description : 'Gets information about user accounts in Bugzilla',
-    author : MetaData.author,
-    homepage : MetaData.homepage,
-    help : '',
-    modifiers : {
-        'id' : noun_arb_text,
-        //'name' : noun_arb_text,
-        //'match' : noun_arb_text,
-        'connection' : Bugzilla.nouns.connection
-    },
-    previewDelay : 200,
-    preview : function(pblock, takes, modifiers) {
-        Bugzilla.nouns.connection.last = modifiers.connection.data;
-        pblock.innerHTML =
-            <div>
-                <b>{Locale.user.title + modifiers.id.text}</b>
-                <br/>
-                <br/>
-                <div>
-                    <div id="result">
-                        {Template.loader}
-                    </div>
-                </div>
-            </div>.toXMLString();
-            
-            $('#result', pblock).html(
-                 <div>
-                    <b>{Locale.user.label}</b>
-                    {Bugzilla.getUsers({
-                        params : {
-                            param : {
-                                ids : modifiers.id.text.split('|')
-                            }
-                        }
-                    })}
-                </div>.toXMLString());
-    },
-    execute : function(takes, modifiers) {}
-});
-*/
 CmdUtils.CreateCommand({
     name : 'bugzilla-get',
     icon : MetaData.icon,
@@ -977,23 +840,27 @@ CmdUtils.CreateCommand({
     homepage : MetaData.homepage,
     help : 'type / select bugzilla id\'s seperated by whitespaces',
     takes : {
-        'id' : Bugzilla.nouns.bugByID
+        'id' : BugById
     },
     modifiers : {
-        'connection' : Bugzilla.nouns.connection
+        'connection' : Connection
     },
     previewDelay : 300,
     preview : function(pblock, takes, modifiers) {
-        if (Bugzilla.nouns.connection.last) {
-        Bugzilla.nouns.connection.last = modifiers.connection.data;
+        if (!modifiers.connection.data) {
+            pblock.innerHTML = Template.needConnection;
+            return null;
+        }
+        Connection.addHistory(modifiers.connection);
         var bug = takes.data;
-        Bugzilla.nouns.bugByID.last = bug;
+        if (bug)
+            BugById.addHistory(bug);
         pblock.innerHTML =
             <div>
                 <h2 id="title">
                     {Locale.bug.get.title}
                     <span class={bug.internals.resolution.toString().toLowerCase()}>
-                        {Template.link(bug.id, Bugzilla.utils.getBugLink(takes.text, modifiers.connection.data.url))}
+                        {Template.link(bug.id, Bugzilla.utils.getBugLink(bug.id, modifiers.connection.data.url))}
                     </span>
                 </h2>
                 <div id="result">
@@ -1020,9 +887,6 @@ CmdUtils.CreateCommand({
                     {Template.line(Template.link(bug.internals.bug_file_loc), Locale.bug.get.bug_file_loc)}
                 </div>
             </div>.toXMLString();
-        } else {
-            pblock.innerHTML = Template.needConnection.toXMLString();
-        }
     },
     execute : function(takes, modifiers) {
         Utils.openUrlInBrowser(Bugzilla.utils.getBugLink(takes.text, modifiers.connection.data.url));
