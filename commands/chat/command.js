@@ -30,7 +30,7 @@ var Contact = {
             return filter.test(contact.name);
         }).map(function(contact){
             return {
-                text : contact.name + ' (' + contact.owner + ')',
+                text : contact.name,
                 summary : contact.name + ' (' + contact.owner + ')',
                 html : contact.name + ' (' + contact.owner + ')',
                 data : contact
