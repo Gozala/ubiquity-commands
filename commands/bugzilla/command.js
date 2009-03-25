@@ -96,6 +96,7 @@ CmdUtils.CreateAdjective = function CreateAdjective (noun) {
      */
     noun.history = function history(limit, callback, self) {
         self = self || arguments.callee.caller;
+        limit = limit || this.memory;
         var suggestions = [];
         try {
             suggestions = Utils.decodeJson(Application.prefs.getValue('ubiquity.adjectives.' + this._name + '.history', '[]')).slice(0, limit);
@@ -802,18 +803,18 @@ CmdUtils.CreateCommand({
     homepage : MetaData.homepage,
     help : 'type bugzilla-info-version',
     modifiers : {
-        'connection' : Connection
+        'in' : Connection
     },
     previewDelay : 200,
     preview : function(pblock, takes, modifiers) {
-        if (!modifiers.connection.data) {
+        if (!modifiers.in.data) {
             pblock.innerHTML = Template.needConnection;
             return null;
         }
-        Connection.addHistory(modifiers.connection);
+        Connection.addHistory(modifiers.in);
         pblock.innerHTML =
             <div>
-                <b>{Locale.info_version.title + modifiers.connection.text}</b>
+                <b>{Locale.info_version.title + modifiers.in.text}</b>
                 <br/>
                 <br/>
                 <div id="result">
@@ -828,7 +829,7 @@ CmdUtils.CreateCommand({
                 </div>.toXMLString());
     },
     execute : function(takes, modifiers) {
-        Utils.openUrlInBrowser(modifiers.connection.data.url);
+        Utils.openUrlInBrowser(modifiers.in.data.url);
     }
 });
 
@@ -843,15 +844,15 @@ CmdUtils.CreateCommand({
         'id' : BugById
     },
     modifiers : {
-        'connection' : Connection
+        'in' : Connection
     },
     previewDelay : 300,
     preview : function(pblock, takes, modifiers) {
-        if (!modifiers.connection.data) {
+        if (!modifiers.in.data) {
             pblock.innerHTML = Template.needConnection;
             return null;
         }
-        Connection.addHistory(modifiers.connection);
+        Connection.addHistory(modifiers.in);
         var bug = takes.data;
         if (bug)
             BugById.addHistory(bug);
@@ -889,6 +890,6 @@ CmdUtils.CreateCommand({
             </div>.toXMLString();
     },
     execute : function(takes, modifiers) {
-        Utils.openUrlInBrowser(Bugzilla.utils.getBugLink(takes.text, modifiers.connection.data.url));
+        Utils.openUrlInBrowser(Bugzilla.utils.getBugLink(takes.text, modifiers.insi.data.url));
     }
 });
