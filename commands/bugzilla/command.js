@@ -116,7 +116,7 @@ CmdUtils.CreateAdjective = function CreateAdjective (noun) {
                 }, this);
             else
                 return suggestions.map(function(suggestion) {
-                    return this.suggest(suggestion.text, suggestion.html)[0];
+                    return this._suggest(suggestion.text, suggestion.html)[0];
                 }, this);
         }
         return suggestions;
@@ -132,7 +132,9 @@ CmdUtils.CreateAdjective = function CreateAdjective (noun) {
                 }).slice(0, this.memory - 1);
                 suggestions.unshift(suggestion);
                 Application.prefs.setValue('ubiquity.adjectives.' + this._name + '.history', Utils.encodeJson(suggestions));
-            } catch (e) {}
+            } catch (e) {
+                Logger.log(e.toSource());
+            }
         }
     };
     /**
@@ -145,10 +147,11 @@ CmdUtils.CreateAdjective = function CreateAdjective (noun) {
                     return (element.text != suggestion.text);
                 });
                 Application.prefs.setValue('ubiquity.adjectives.' + this._name + '.history', Utils.encodeJson(suggestions));
-            } catch(e) {}
+            } catch(e) {
+                Logger.log(e.toSource());
+            }
         }
     };
-    
     return noun;
 };
 
@@ -611,10 +614,8 @@ var Connection = CmdUtils.CreateAdjective({
         return matchedsuggestions.length ? matchedsuggestions : unmatchedSuggestions;
     },
     default : function() {
-        if (this.reliable) {
-            Logger.log(this.history(1).toSource())
+        if (this.reliable)
             return this.history(1);
-        }
         return [];
     },
     get url() {
@@ -630,7 +631,6 @@ var BugById = CmdUtils.CreateAdjective({
     delay : 200,
     suggest : function(text, html, makeSuggestion) {
         var suggestions = [];
-        text = text.replace('bugzilla-get ','');
         var params = [{ids : text.split(/\s+/), permissive : true}];
         try {
             if (makeSuggestion) {
@@ -646,7 +646,8 @@ var BugById = CmdUtils.CreateAdjective({
                     }
                 });
             } else {
-                Bugzilla.getBugs(params).forEach(function(){
+                Bugzilla.getBugs(params).forEach(function(bug) {
+                    var bugId = bug.id.toString();
                     suggestions.push({
                         text : bugId,
                         summary : bugId,
@@ -854,14 +855,18 @@ CmdUtils.CreateCommand({
         }
         Connection.addHistory(modifiers.in);
         var bug = takes.data;
-        if (bug)
-            BugById.addHistory(bug);
+        
+        // Workaround for async suggestions bug (still need block but no the second condition)
+        // https://bugzilla.mozilla.org/show_bug.cgi?id=484615
+        if (bug && (bug.id != 484615))
+            BugById.addHistory(takes);
+        
         pblock.innerHTML =
             <div>
                 <h2 id="title">
                     {Locale.bug.get.title}
                     <span class={bug.internals.resolution.toString().toLowerCase()}>
-                        {Template.link(bug.id, Bugzilla.utils.getBugLink(bug.id, modifiers.connection.data.url))}
+                        {Template.link(bug.id, Bugzilla.utils.getBugLink(bug.id, modifiers.in.data.url))}
                     </span>
                 </h2>
                 <div id="result">
@@ -890,6 +895,6 @@ CmdUtils.CreateCommand({
             </div>.toXMLString();
     },
     execute : function(takes, modifiers) {
-        Utils.openUrlInBrowser(Bugzilla.utils.getBugLink(takes.text, modifiers.insi.data.url));
+        Utils.openUrlInBrowser(Bugzilla.utils.getBugLink(takes.text, modifiers.in.data.url));
     }
 });
