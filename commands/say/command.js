@@ -1,99 +1,142 @@
-// Say
-var URL = null;
-CmdUtils.CreateCommand({
-    name: "say",
-    //icon: "http://",
-    description: "Pronounces the selected/specified text",
-    author: { name: "Irakli Gozalishvili", email: "rfobic@gmail.com"},
-    homepage: 'http://rfobic.blogspot.com/2008/10/ubiquity-command-say.html',
-    help: 'Select or type the text to pronounce it',
-    takes: {"sentence": noun_arb_text},
-    
-    preview: function(pblock, noun) {
-        var self = this;
-        this.pblock = jQuery(pblock);
-        
-
-        pblock.innerHTML = CmdUtils.renderTemplate(
-                '\n<div>\n\t<img id="loader" src="chrome://global/skin/icons/loading_16.png" alt=""/>' +
-                '\n\t<strong id="message-bar"></strong>\n</div>' +
-                '\n<div id="text-bar" style="font-size: 11px;"></div>\n' +
-                '\n<iframe style="visibility: hidden" id="player" width="100%" height="100%" src="about:blank" >' +
-                '\n</iframe>',
-                {
-                    text : this.text[1],
-                }
+if (!Function.prototype.bind) Function.prototype.bind = function () {
+    var args = Array.prototype.slice.call(arguments);
+    var self = this;
+    var bound = function () {
+        return self.call.apply(
+            self,
+            args.concat(
+                Array.prototype.slice.call(arguments)
+            )
         );
-        
-        this.frame = this.pblock.find("iframe")[0];
-        this.loader = this.pblock.find("#loader")[0];
-        this.messageBar = this.pblock.find("#message-bar");
-        this.textBar = this.pblock.find("#text-bar");
-        
-        
-        this.text = noun.text.split(/([\s\S]{1,300})(?=\s|$)/gm);
-        this.frame.addEventListener('load',function() {
-            if (self.frame.contentDocument.location != 'about:blank') {
-                var player = jQuery(self.frame.contentDocument).find('video')[0];
-                player.addEventListener('ended', function() {
-                    self.playNextPart.call(self);
-                }, true);
+    };
+    bound.name = this.name;
+    bound.displayName = this.displayName;
+    bound.length = this.length;
+    bound.unbound = self;
+    return bound;
+};
+
+var Sampler = function(text, element) {
+    this.player = element;
+    this.player.addEventListener('ended', this.next.bind(this), true);
+    this.playlist = [];
+    this.subscribers = [];
+    this.chunks = text.split(/([\s\S]{1,300})(?=\s|$)/gm).filter(function(chunk) chunk != "");
+    this.getTrack();
+};
+Sampler.prototype = {
+    voice: "crystal",
+    serviceURL: "http://192.20.225.55/tts/cgi-bin/nph-talk",
+    chunks: null,
+    player: null,
+    playlist: null,
+    subscribers: null,
+    getTrack: function() {
+        var text = this.chunks.shift();
+        $.ajax({
+            url : this.serviceURL,
+            type: "POST",
+            cache: false,
+            complete: (function(request) {
+                this.playlist.push({ 
+                    url: request.channel.URI.spec, 
+                    text: text
+                });
+                this.next();
+                if(this.chunks.length > 0) this.getTrack();
+            }).bind(this),
+            data : {
+                voice : this.voice,
+                txt : text
             }
-        }, true);
-
-        this.playNextPart();
+        });
     },
-
-    execute: function(noun) {
-        window.getBrowser().selectedTab = window.getBrowser().addTab(URL);
-    },
-    
-    // Core
-    pblock : null,
-    
-    voice : 'crystal',
-    
-    serviceURL : 'http://192.20.225.55/tts/cgi-bin/nph-talk',
-    
-    text : [],
-    
-    url : '',
-    
-    frame : null,
-    
-    messageBar : null,
-    
-    textBar : null,
-    
-    loader : null,
-    
-    textToUrl: function(text) {
-        return jQuery.ajax({
-                    url : this.serviceURL,
-                    type: "POST",
-                    async : false,
-                    data : {
-                        voice : this.voice,
-                        txt : text,
-                    }
-        }).channel.URI.spec;
-    },
-    
-    playNextPart : function() {
-        this.text.shift();
-        while (this.text[0] == '')
-            this.text.shift();
-        if (this.text.length > 0) {
-            this.loader.style.visibility = 'visible';
-            this.messageBar.text('Converting text to speech:');
-            this.textBar.text(this.text[0]);
-            this.url = this.textToUrl(this.text[0]);
-            this.frame.src = this.url;
-            this.loader.style.visibility = 'hidden';
-            this.messageBar.text('Pronouncing text:');
-        } else {
-            this.messageBar.text('Finished pronouncing the text');
-            this.textBar.text('');
+    next: function() {
+        if ((this.player.paused || this.player.ended) && this.playlist.length) {
+            var track = this.playlist.shift();
+            this.publish(track);
+            this.player.src = track.url;
+            this.player.load();
+            this.player.play();
         }
+    },
+    publish: function(data) {
+        this.subscribers.forEach(function(subscriber) {
+            if (typeof subscriber == "function") subscriber(data);
+        });
+    },
+    subscribe: function(subscriber) {
+        this.subscribers.push(subscriber);
     }
-});
+};
+var $ = jQuery;
+if (CmdUtils.parserVersion == 2) {
+    CmdUtils.CreateCommand({
+        names: ["say", "pronounce", "text to speech"],
+        //icon: "http://",
+        description: "Pronounces the selected/specified text",
+        author: { name: "Irakli Gozalishvili", email: "rfobic@gmail.com"},
+        homepage: 'http://gozala.github.com/ubiquity/commands/say/',
+        help: 'Select or type text to pronounce it',
+        arguments: [{
+            role: "object",
+            nountype: noun_arb_text,
+            label: "sentence"
+        }],
+        preview: function preview(pblock, args) {
+            $(pblock).html(CmdUtils.renderTemplate(
+                    '\n<div>\n\t<img id="loader" src="chrome://global/skin/icons/loading_16.png" alt=""/>' +
+                    '\n\t<strong id="message-bar"></strong>\n</div>' +
+                    '<br/><br/>' +
+                    '\n<div id="text-bar" style="font-size: 11px;"></div>\n' +
+                    '\n<audio id="player"></audio>'
+            ));
+            var loader = $("#loader", pblock)[0];
+            var messageBar = $("#message-bar", pblock);
+            var textBar = $("#text-bar", pblock);
+
+            var sampler = new Sampler(args.object.text, $("#player", pblock)[0]);
+            sampler.subscribe(function(data) {
+                loader.style.visibility = 'hidden';
+                messageBar.text('Pronouncing text:');
+                textBar.text(data.text);
+            });
+        },
+        execute: function(args) {
+            window.getBrowser().selectedTab = window.getBrowser().addTab(URL);
+        }
+    });
+} else {
+    CmdUtils.CreateCommand({
+        name: "say",
+        //icon: "http://",
+        description: "Pronounces the selected/specified text",
+        author: { name: "Irakli Gozalishvili", email: "rfobic@gmail.com" },
+        homepage: 'http://rfobic.blogspot.com/2008/10/ubiquity-command-say.html',
+        help: 'Select or type the text to pronounce it',
+        takes: { "sentence": noun_arb_text },
+        preview: function(pblock, noun) {
+            $(pblock).html(CmdUtils.renderTemplate(
+                    '\n<div>\n\t<img id="loader" src="chrome://global/skin/icons/loading_16.png" alt=""/>' +
+                    '\n\t<strong id="message-bar"></strong>\n</div>' +
+                    '<br/><br/>' +
+                    '\n<div id="text-bar" style="font-size: 11px;"></div>\n' +
+                    '\n<audio id="player"></audio>'
+            ));
+            var loader = $("#loader", pblock)[0];
+            var messageBar = $("#message-bar", pblock);
+            var textBar = $("#text-bar", pblock);
+
+            var sampler = new Sampler(noun.text, $("#player", pblock)[0]);
+            sampler.subscribe(function(data) {
+                loader.style.visibility = 'hidden';
+                messageBar.text('Pronouncing text:');
+                textBar.text(data.text);
+            });
+        },
+        execute: function(noun) {
+            window.getBrowser().selectedTab = window.getBrowser().addTab(URL);
+        },
+    });
+}
+
